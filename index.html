@@ -1111,6 +1111,22 @@
     }
     .res-trajet-line strong { font-weight: 600; color: #455060; }
 
+    /* « Mon trajet en une phrase » : lien texte discret + la phrase, qui
+       apparaît en dessous une fois calculée. */
+    .phrase-wrap { text-align: center; margin: 2px 0 10px; }
+    .phrase-btn {
+      background: none; border: none; padding: 4px 8px; cursor: pointer;
+      font-family: inherit; font-size: 12px; color: #607080;
+      text-decoration: underline; text-underline-offset: 2px;
+    }
+    .phrase-btn:hover { color: #1976d2; }
+    .phrase-btn:disabled { opacity: 0.6; cursor: default; }
+    .phrase-texte {
+      background: #f4f8fd; border: 1px solid #e2ecf7; border-radius: 12px;
+      padding: 10px 14px; margin-top: 6px; text-align: left;
+      font-size: 13.5px; color: #37474f; line-height: 1.5;
+    }
+
     /* Notes de transparence : mentions discrètes de source/limite (date des
        prix, "hors trafic", classe de péage…), toujours en retrait visuel. */
     .src-note { font-size: 10px; font-weight: 500; color: #a4b0bd; }
@@ -1822,6 +1838,13 @@
          seul itinéraire (pas de fiche pour porter cette info) - voir
          renderResultMode(). -->
     <div class="res-trajet-line" id="resTrajetLine" style="display:none;"><strong id="r-dist">—</strong> · <strong id="r-duree">—</strong> <span class="src-note">hors trafic</span></div>
+
+    <!-- Résumé de l'itinéraire en une phrase, à la demande (lien discret) :
+         les grands axes dans l'ordre, avec la ville de chaque changement. -->
+    <div class="phrase-wrap" id="phraseWrap" style="display:none;">
+      <button type="button" class="phrase-btn" id="phraseBtn" onclick="afficherPhraseItineraire()">Mon trajet en une phrase</button>
+      <div class="phrase-texte" id="phraseTexte" style="display:none;"></div>
+    </div>
 
     <!-- "Coût & conso" : le détail (carburant · péages · litres) est
          désormais intégré dans la fiche de l'itinéraire sélectionné (voir
@@ -4956,7 +4979,16 @@ async function getRoute(coords, apiKey, avoid) {
   const d = await r.json();
   const s = d.routes[0].summary;
   const polyline = d.routes[0].geometry;
-  return { distanceKm: s.distance / 1000, dureeSec: s.duration, polyline };
+  // steps : chaque manœuvre avec le nom de la voie empruntée ("A 6", "N 7"…)
+  // et son index de point sur le tracé. Sert à résumer l'itinéraire en une
+  // phrase (voir construirePhraseItineraire).
+  const steps = [];
+  (d.routes[0].segments || []).forEach(seg => {
+    (seg.steps || []).forEach(st => steps.push({
+      name: st.name || '', distance: st.distance || 0, wayPoint: (st.way_points && st.way_points[0]) || 0,
+    }));
+  });
+  return { distanceKm: s.distance / 1000, dureeSec: s.duration, polyline, steps };
 }
 
 // URL du relais Cloudflare Worker (ViaMichelin, Vinci-autoroutes - contourne le blocage CORS).
@@ -4974,6 +5006,86 @@ function tollCacheKey(c1, c2) {
   // source ou de format de détail.
   return 'toll6:' + r(c1[1]) + ',' + r(c1[0]) + '>' + r(c2[1]) + ',' + r(c2[0]);
 }
+// --- « Mon trajet en une phrase » : résume l'itinéraire comme on le
+// raconterait à quelqu'un ("Prends l'A6, à Beaune passe sur l'A31, puis la N57
+// jusqu'à l'arrivée"). On ne garde que les grands axes (autoroutes et
+// nationales), et seulement ceux parcourus assez longtemps pour compter. ---
+
+// Normalise un nom de voie ORS : "A 6" -> "A6", "N 7" -> "N7". Renvoie null si
+// ce n'est pas un grand axe (rue, départementale, voie sans nom…).
+function axeMajeur(nom) {
+  if (!nom) return null;
+  const m = String(nom).match(/\b([AN])\s?(\d+[a-z]?)\b/i);
+  if (!m) return null;
+  return m[1].toUpperCase() + m[2].toLowerCase();
+}
+
+// Suite des grands axes empruntés, dans l'ordre, avec le point du tracé où l'on
+// arrive dessus (pour retrouver la ville du changement). Les axes traversés sur
+// moins de MIN_KM sont ignorés (bretelles, raccords) et les répétitions
+// consécutives fusionnées (ORS découpe un même axe en plusieurs steps).
+function axesDuTrajet(steps, minKm) {
+  const MIN = (minKm || 12) * 1000;
+  const cumul = new Map(); // axe -> distance totale (m), pour filtrer ensuite
+  const suite = [];
+  (steps || []).forEach(st => {
+    const axe = axeMajeur(st.name);
+    if (!axe) return;
+    cumul.set(axe, (cumul.get(axe) || 0) + st.distance);
+    const dernier = suite[suite.length - 1];
+    if (dernier && dernier.axe === axe) dernier.distance += st.distance;
+    else suite.push({ axe, distance: st.distance, wayPoint: st.wayPoint });
+  });
+  // Garde les tronçons significatifs, puis refusionne les doublons devenus
+  // consécutifs après filtrage (ex. A6 · bretelle courte · A6).
+  const gardes = suite.filter(s => s.distance >= MIN || cumul.get(s.axe) >= MIN);
+  const out = [];
+  gardes.forEach(s => {
+    const d = out[out.length - 1];
+    if (d && d.axe === s.axe) d.distance += s.distance; else out.push({ ...s });
+  });
+  return out;
+}
+
+// Ville la plus proche d'un point du tracé (géocodage inverse BAN, gratuit et
+// sans clé). Best-effort : renvoie null si indisponible.
+async function villeProche(lat, lon) {
+  try {
+    const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lat=${lat}&lon=${lon}&limit=1`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const p = d.features && d.features[0] && d.features[0].properties;
+    return (p && (p.city || p.name)) || null;
+  } catch (e) { return null; }
+}
+
+// Compose la phrase à partir d'un itinéraire (steps + tracé). Les villes des
+// changements d'axe sont récupérées en parallèle (best-effort : si le
+// géocodage inverse échoue, la phrase reste correcte, juste sans la ville).
+async function construirePhraseItineraire(route, arrivee) {
+  const axes = axesDuTrajet(route && route.steps);
+  if (!axes.length) return 'Pas de grand axe sur ce trajet : petites routes du départ à l\'arrivée.';
+
+  let points = null;
+  try { points = decodePolyline(route.polyline, 5); } catch (e) {}
+  // Ville du point où l'on rejoint chaque axe (sauf le premier : on y est déjà
+  // au départ, la ville n'apporte rien).
+  const villes = await Promise.all(axes.map((a, i) => {
+    if (i === 0 || !points || !points[a.wayPoint]) return Promise.resolve(null);
+    const [lat, lon] = points[a.wayPoint];
+    return villeProche(lat, lon);
+  }));
+
+  const article = a => (a[0] === 'A' ? "l'" + a : 'la ' + a);
+  let phrase = 'Prends ' + article(axes[0].axe);
+  for (let i = 1; i < axes.length; i++) {
+    const ou = villes[i] ? `à ${villes[i]} ` : '';
+    phrase += `, ${ou}passe sur ${article(axes[i].axe)}`;
+  }
+  phrase += arrivee ? `, puis les dernières routes jusqu'à ${arrivee}.` : ", puis les dernières routes jusqu'à l'arrivée.";
+  return phrase;
+}
+
 function tollCacheGet(key) {
   try { const v = localStorage.getItem(key); return v === null ? undefined : JSON.parse(v); }
   catch(e) { return undefined; }
@@ -5254,6 +5366,47 @@ function renderResultMode() {
   // en a deux ; sert de secours sinon (pas de fiche pour les porter).
   const resTrajetLine = document.getElementById('resTrajetLine');
   if (resTrajetLine) resTrajetLine.style.display = unSeul ? 'block' : 'none';
+
+  // « Mon trajet en une phrase » : proposé dès qu'on a le détail des voies de
+  // l'itinéraire sélectionné. La phrase se recalcule au changement
+  // d'itinéraire (Avec/Sans péages), donc on repart de l'état replié.
+  const wrap = document.getElementById('phraseWrap');
+  if (wrap) {
+    const o = (routeOptionsData && routeOptionsData[selectedRouteOption]) || null;
+    const dispo = !!(o && Array.isArray(o.steps) && o.steps.length);
+    wrap.style.display = dispo ? 'block' : 'none';
+    const btn = document.getElementById('phraseBtn');
+    const txt = document.getElementById('phraseTexte');
+    if (btn) { btn.disabled = false; btn.textContent = 'Mon trajet en une phrase'; }
+    if (txt) { txt.style.display = 'none'; txt.textContent = ''; }
+  }
+}
+
+// Calcule (à la demande) et affiche la phrase qui résume l'itinéraire choisi.
+// À la demande car elle nécessite un géocodage inverse par changement d'axe :
+// inutile de le faire pour tout le monde à chaque calcul.
+async function afficherPhraseItineraire() {
+  const btn = document.getElementById('phraseBtn');
+  const txt = document.getElementById('phraseTexte');
+  if (!btn || !txt) return;
+  // Deuxième clic : on replie.
+  if (txt.style.display !== 'none') {
+    txt.style.display = 'none';
+    btn.textContent = 'Mon trajet en une phrase';
+    return;
+  }
+  const o = (routeOptionsData && routeOptionsData[selectedRouteOption]) || null;
+  if (!o) return;
+  btn.disabled = true;
+  btn.textContent = 'Un instant…';
+  const arrivee = (lastStationSurTrajet && lastStationSurTrajet.arrivee) || '';
+  let phrase;
+  try { phrase = await construirePhraseItineraire(o, arrivee); }
+  catch (e) { phrase = 'Résumé indisponible pour ce trajet.'; }
+  btn.disabled = false;
+  btn.textContent = 'Masquer la phrase';
+  txt.textContent = phrase;
+  txt.style.display = 'block';
 }
 
 // --- Comparateur des itinéraires : rapide (tout péage) et zéro péage,
@@ -5786,7 +5939,7 @@ async function calculer() {
     const mkOption = (route) => {
       const distA = route.distanceKm;
       const litresA = (distA * conso) / 100;
-      return { polyline: route.polyline, distA, dureeSec: route.dureeSec, litresA, coutA: litresA * prixActuel, coutPeage: null, peageDetails: null, unit };
+      return { polyline: route.polyline, steps: route.steps, distA, dureeSec: route.dureeSec, litresA, coutA: litresA * prixActuel, coutPeage: null, peageDetails: null, unit };
     };
 
     // Si le trajet le plus rapide et le trajet "zéro péage" sont en fait le
