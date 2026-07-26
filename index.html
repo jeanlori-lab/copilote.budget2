@@ -1112,22 +1112,6 @@
     }
     .res-trajet-line strong { font-weight: 600; color: #455060; }
 
-    /* « Mon trajet en une phrase » : lien texte discret + la phrase, qui
-       apparaît en dessous une fois calculée. */
-    .phrase-wrap { text-align: center; margin: 2px 0 10px; }
-    .phrase-btn {
-      background: none; border: none; padding: 4px 8px; cursor: pointer;
-      font-family: inherit; font-size: 12px; color: #607080;
-      text-decoration: underline; text-underline-offset: 2px;
-    }
-    .phrase-btn:hover { color: #1976d2; }
-    .phrase-btn:disabled { opacity: 0.6; cursor: default; }
-    .phrase-texte {
-      background: #f4f8fd; border: 1px solid #e2ecf7; border-radius: 12px;
-      padding: 10px 14px; margin-top: 6px; text-align: left;
-      font-size: 13.5px; color: #37474f; line-height: 1.5;
-    }
-
     /* Notes de transparence : mentions discrètes de source/limite (date des
        prix, "hors trafic", classe de péage…), toujours en retrait visuel. */
     .src-note { font-size: 10px; font-weight: 500; color: #a4b0bd; }
@@ -1839,13 +1823,6 @@
          seul itinéraire (pas de fiche pour porter cette info) - voir
          renderResultMode(). -->
     <div class="res-trajet-line" id="resTrajetLine" style="display:none;"><strong id="r-dist">—</strong> · <strong id="r-duree">—</strong> <span class="src-note">hors trafic</span></div>
-
-    <!-- Résumé de l'itinéraire en une phrase, à la demande (lien discret) :
-         les grands axes dans l'ordre, avec la ville de chaque changement. -->
-    <div class="phrase-wrap" id="phraseWrap" style="display:none;">
-      <button type="button" class="phrase-btn" id="phraseBtn" onclick="afficherPhraseItineraire()">Mon trajet en une phrase</button>
-      <div class="phrase-texte" id="phraseTexte" style="display:none;"></div>
-    </div>
 
     <!-- "Coût & conso" : le détail (carburant · péages · litres) est
          désormais intégré dans la fiche de l'itinéraire sélectionné (voir
@@ -3579,54 +3556,6 @@ async function fetchAllODSRecords(baseUrl) {
   return records;
 }
 
-// Nombre de candidates (les moins chères) dont on mesure la vraie distance en
-// voiture : au-delà, l'appel matrice grossit sans rien changer au résultat.
-const MAX_CANDIDATES_ROUTE = 25;
-
-// --- Distances RÉELLES en voiture (et non à vol d'oiseau) ---
-// Une station à 3 km à vol d'oiseau peut être à 12 km par la route (rivière,
-// autoroute sans sortie, montagne...). On mesure donc la vraie distance de
-// conduite avec la matrice d'OpenRouteService : un seul appel pour toutes les
-// candidates, au lieu d'un calcul d'itinéraire par station.
-//
-// paires : [{ from: [lon, lat], to: [lon, lat] }, ...]
-// Renvoie un tableau de distances en km (null quand la route est impossible),
-// ou null si le service est indisponible - l'appelant retombe alors sur le
-// vol d'oiseau plutôt que de ne rien proposer.
-async function distancesEnVoiture(paires) {
-  if (!paires.length) return [];
-  const apiKey = (document.getElementById('apiKey') || {}).value;
-  if (!apiKey) return null;
-  // Points dédupliqués : la matrice attend une liste de lieux + des index.
-  const cle = p => p[0].toFixed(5) + ',' + p[1].toFixed(5);
-  const index = new Map();
-  const locations = [];
-  const idx = p => {
-    const k = cle(p);
-    if (!index.has(k)) { index.set(k, locations.length); locations.push(p); }
-    return index.get(k);
-  };
-  const sources = paires.map(p => idx(p.from));
-  const destinations = paires.map(p => idx(p.to));
-  try {
-    const r = await fetch('https://api.openrouteservice.org/v2/matrix/driving-car', {
-      method: 'POST',
-      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ locations, sources, destinations, metrics: ['distance'], units: 'km' }),
-    });
-    if (!r.ok) return null;
-    const d = await r.json();
-    if (!d.distances) return null;
-    // distances[i][j] = source i -> destination j ; on ne veut que les paires
-    // (i, i), d'où la lecture en diagonale.
-    return paires.map((_, i) => {
-      const ligne = d.distances[i];
-      const v = ligne ? ligne[i] : null;
-      return (typeof v === 'number' && isFinite(v)) ? v : null;
-    });
-  } catch (e) { return null; }
-}
-
 // mode: 'min' (station la moins chère, par défaut) ou 'max' (la plus chère).
 async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
   rayonKm = rayonKm || STATION_RAYON_KM;
@@ -3643,7 +3572,7 @@ async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
     const records = await fetchAllODSRecords(url);
     if (!records.length) return null;
     const veutMax = mode === 'max';
-    const candidats = [];
+    let best = null;
     for (const rec of records) {
       const f = rec.fields || {};
       const prix = parseFloat(f[field]);
@@ -3655,37 +3584,11 @@ async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
       const geo = rec.geometry && rec.geometry.coordinates; // [lon, lat]
       const sLat = geo ? geo[1] : (f.latitude !== undefined ? parseFloat(f.latitude) : null);
       const sLon = geo ? geo[0] : (f.longitude !== undefined ? parseFloat(f.longitude) : null);
-      // Filtre client en plus du rayon serveur (sécurité si l'API renvoie plus
-      // large). À vol d'oiseau ici : c'est un PRÉ-filtre, la distance en
-      // voiture étant toujours >= celle à vol d'oiseau, aucune station
-      // réellement dans le rayon routier ne peut être écartée à tort.
+      // Filtre client en plus du rayon serveur (sécurité si l'API renvoie plus large).
       if (!illimite && sLat !== null && sLon !== null && distKm(lat, lon, sLat, sLon) > rayonKm) continue;
-      candidats.push({ prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, maj });
+      if (!best || (veutMax ? prix > best.prix : prix < best.prix)) best = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, maj };
     }
-    if (!candidats.length) return null;
-    candidats.sort((a, b) => veutMax ? b.prix - a.prix : a.prix - b.prix);
-
-    // "France entière" : aucune notion de rayon, on répond directement.
-    if (illimite) return candidats[0];
-
-    // Affine avec la VRAIE distance en voiture : le rayon demandé s'entend en
-    // km de conduite, pas à vol d'oiseau. On ne mesure que les meilleures
-    // candidates (un seul appel matrice) et on garde la meilleure qui tient
-    // réellement dans le rayon.
-    const top = candidats.slice(0, MAX_CANDIDATES_ROUTE)
-      .filter(c => c.lat !== null && c.lon !== null);
-    const dists = await distancesEnVoiture(top.map(c => ({ from: [lon, lat], to: [c.lon, c.lat] })));
-    if (dists) {
-      for (let i = 0; i < top.length; i++) {
-        if (dists[i] !== null && dists[i] <= rayonKm) return { ...top[i], distRoute: dists[i] };
-      }
-      // Aucune des meilleures candidates n'est accessible dans le rayon
-      // routier : mieux vaut le dire que proposer une station en réalité
-      // bien plus loin que ce qui est demandé.
-      return null;
-    }
-    // Service de distance indisponible : repli sur le vol d'oiseau.
-    return candidats[0];
+    return best;
   } catch (e) { return null; }
 }
 
@@ -3727,23 +3630,7 @@ async function fetchBorneRecharge(lat, lon, rayonKm) {
     if (!candidats.length) return null;
     const rapides = candidats.filter(c => c.puissance !== null && c.puissance >= BORNE_RAPIDE_KW);
     const pool = rapides.length ? rapides : candidats;
-    // Le rayon s'entend en km de conduite : on classe les plus proches à vol
-    // d'oiseau (pré-filtre exhaustif), puis on mesure la vraie distance par la
-    // route pour retenir la borne réellement la plus proche dans le rayon.
-    const parProximite = pool.slice().sort((a, b) => a.dist - b.dist).slice(0, MAX_CANDIDATES_ROUTE);
-    const dists = await distancesEnVoiture(parProximite.map(c => ({ from: [lon, lat], to: [c.lon, c.lat] })));
-    if (dists) {
-      let best = null;
-      for (let i = 0; i < parProximite.length; i++) {
-        const d = dists[i];
-        if (d === null || d > rayonKm) continue;
-        if (!best || d < best.distRoute) best = { ...parProximite[i], distRoute: d };
-      }
-      if (best) return best;
-      return null; // aucune borne réellement accessible dans le rayon routier
-    }
-    // Service de distance indisponible : repli sur le vol d'oiseau.
-    return parProximite[0];
+    return pool.reduce((meilleure, c) => (!meilleure || c.dist < meilleure.dist) ? c : meilleure, null);
   } catch (e) { return null; }
 }
 
@@ -3779,16 +3666,10 @@ function buildStationDetail(station, type, lat, lon, big) {
   // Distance affichée seulement si on a un point de référence (lat/lon) ET
   // les coordonnées de la station. (Ni la recherche "France entière" ni la
   // recherche "sur le trajet" n'ont de point de référence unique pertinent.)
-  // On privilégie la distance RÉELLE par la route (distRoute, mesurée lors de
-  // la recherche) ; le vol d'oiseau ne sert que de repli si elle manque.
   if (lat !== null && lat !== undefined && lon !== null && lon !== undefined
       && station.lat !== null && station.lon !== null) {
-    if (isFinite(station.distRoute)) {
-      detail.appendChild(document.createTextNode(' (' + station.distRoute.toFixed(1) + ' km par la route)'));
-    } else {
-      const dKm = distKm(lat, lon, station.lat, station.lon);
-      if (isFinite(dKm)) detail.appendChild(document.createTextNode(' (' + dKm.toFixed(1) + ' km à vol d\'oiseau)'));
-    }
+    const dKm = distKm(lat, lon, station.lat, station.lon);
+    if (isFinite(dKm)) detail.appendChild(document.createTextNode(' (' + dKm.toFixed(1) + ' km)'));
   }
   // Date du relevé du prix (transparence : un prix peut dater de plusieurs jours).
   if (station.maj) {
@@ -3971,7 +3852,7 @@ async function calculerStationsParTroncon() {
   if (!troncons.length) {
     const empty = document.createElement('div');
     empty.className = 'cheapest-empty';
-    empty.textContent = 'Aucune station accessible sans détour important (plus de ' + DETOUR_TRAJET_MAX_KM + ' km par la route) sur les tronçons de ce trajet.';
+    empty.textContent = 'Aucune station trouvée à moins de ~5 min de la route sur les tronçons de ce trajet.';
     note.appendChild(empty);
     // Bascule quand même sur le nouvel onglet : l'utilisateur voit que le
     // calcul a tourné et n'a rien trouvé, plutôt qu'un silence ambigu.
@@ -4005,7 +3886,7 @@ async function calculerStationsParTroncon() {
     // ajoutée par buildStationDetail en tout dernier) : on l'insère juste
     // avant, plutôt que de l'ajouter après coup en bout de ligne.
     if (isFinite(t.station.distRoute)) {
-      const distNode = document.createTextNode(' (à ' + t.station.distRoute.toFixed(1) + ' km par la route)');
+      const distNode = document.createTextNode(' (à ' + t.station.distRoute.toFixed(1) + ' km de la route)');
       const dateSpan = detail.querySelector('.src-note');
       if (dateSpan) detail.insertBefore(distNode, dateSpan); else detail.appendChild(distNode);
     }
@@ -4135,7 +4016,7 @@ async function rechercherStationMoinsChere() {
   const label = document.createElement('span');
   label.className = 'cheapest-radius-label';
   label.id = 'cheapestRadiusLabel';
-  label.textContent = 'Rayon : ' + rayon + ' km par la route';
+  label.textContent = 'Rayon : ' + rayon + ' km';
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.className = 'cheapest-slider';
@@ -4145,7 +4026,7 @@ async function rechercherStationMoinsChere() {
   slider.value = rayon;
   slider.setAttribute('aria-label', 'Rayon de recherche');
   slider.addEventListener('input', () => {
-    document.getElementById('cheapestRadiusLabel').textContent = 'Rayon : ' + slider.value + ' km par la route';
+    document.getElementById('cheapestRadiusLabel').textContent = 'Rayon : ' + slider.value + ' km';
   });
   slider.addEventListener('change', () => {
     lastStationSearch.rayon = parseInt(slider.value, 10);
@@ -4160,11 +4041,9 @@ async function rechercherStationMoinsChere() {
 // --- Station la moins chère SUR le trajet : parmi les stations proches de
 // la route (à vol d'oiseau, approximation de "à ~5 min en voiture"), on
 // cherche la moins chère - complète la recherche "près du départ". ---
-// Détour maximal accepté pour aller faire le plein, mesuré en km RÉELS de
-// conduite depuis l'itinéraire (et non à vol d'oiseau) : ~5 km, soit quelques
-// minutes de détour. Sert aussi de rayon de pré-sélection à vol d'oiseau, ce
-// qui est exhaustif puisque la route est toujours au moins aussi longue.
-const DETOUR_TRAJET_MAX_KM = 5;
+// ~5 min en voiture ≈ 4 km à vol d'oiseau (routes locales à ~50 km/h) : une
+// vraie isochrone par station coûterait un appel routage par candidate.
+const RAYON_TRAJET_KM = 4;
 let lastStationSurTrajet = null; // { polyline, type, depart, arrivee, distKm, conso }
 
 // fenetreKm (optionnel) : [minKm, maxKm] le long du trajet - ne considère que
@@ -4211,18 +4090,14 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
       if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
       if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
     }
-    const margeDeg = DETOUR_TRAJET_MAX_KM / 100; // ~marge du rayon en degrés
+    const margeDeg = RAYON_TRAJET_KM / 100; // ~marge du rayon en degrés
     minLat -= margeDeg; maxLat += margeDeg; minLng -= margeDeg; maxLng += margeDeg;
     const polygon = `(${minLat},${minLng}),(${minLat},${maxLng}),(${maxLat},${maxLng}),(${maxLat},${minLng})`;
     const url = `https://data.economie.gouv.fr/api/records/1.0/search/?dataset=prix-des-carburants-en-france-flux-instantane-v2&geofilter.polygon=${encodeURIComponent(polygon)}`;
     const records = await fetchAllODSRecords(url);
     if (!records.length) return null;
 
-    // Pré-sélection à vol d'oiseau : la distance en voiture étant toujours
-    // >= celle à vol d'oiseau, aucune station réellement à portée par la route
-    // n'est écartée à tort ici. Le tri fin se fait ensuite sur la vraie
-    // distance de conduite.
-    const candidats = [];
+    let best = null;
     for (const rec of records) {
       const f = rec.fields || {};
       const prix = parseFloat(f[field]);
@@ -4235,6 +4110,9 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
       const sLat = geo ? geo[1] : (f.latitude !== undefined ? parseFloat(f.latitude) : null);
       const sLon = geo ? geo[0] : (f.longitude !== undefined ? parseFloat(f.longitude) : null);
       if (sLat === null || sLon === null || isNaN(sLat) || isNaN(sLon)) continue;
+      // Élimine vite les candidates plus chères qu'une station déjà validée :
+      // pas la peine de mesurer leur distance à la route.
+      if (best && prix >= best.prix) continue;
       const cosLat = Math.cos(sLat * Math.PI / 180);
       let d2min = Infinity, idxMin = iStart;
       for (let i = iStart; i <= iEnd; i++) {
@@ -4244,31 +4122,11 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
         const d2 = dLat * dLat + dLng * dLng;
         if (d2 < d2min) { d2min = d2; idxMin = i; }
       }
-      const volOiseau = Math.sqrt(d2min);
-      if (volOiseau > DETOUR_TRAJET_MAX_KM) continue;
-      candidats.push({ prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon,
-        distRoute: volOiseau, kmSurTrajet: echKm[idxMin], maj, ancre: echantillons[idxMin] });
+      const distRoute = Math.sqrt(d2min);
+      if (distRoute > RAYON_TRAJET_KM) continue;
+      best = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, distRoute, kmSurTrajet: echKm[idxMin], maj };
     }
-    if (!candidats.length) return null;
-    candidats.sort((a, b) => a.prix - b.prix);
-
-    // Mesure le VRAI détour par la route (quitter l'itinéraire, rejoindre la
-    // station) pour les meilleures candidates, et retient la moins chère dont
-    // le détour reste acceptable.
-    const top = candidats.slice(0, MAX_CANDIDATES_ROUTE);
-    const dists = await distancesEnVoiture(top.map(c => ({ from: [c.ancre[1], c.ancre[0]], to: [c.lon, c.lat] })));
-    if (dists) {
-      for (let i = 0; i < top.length; i++) {
-        if (dists[i] !== null && dists[i] <= DETOUR_TRAJET_MAX_KM) {
-          const { ancre, ...station } = top[i];
-          return { ...station, distRoute: dists[i] };
-        }
-      }
-      return null; // aucune station vraiment accessible sans détour excessif
-    }
-    // Service de distance indisponible : repli sur le vol d'oiseau.
-    const { ancre, ...station } = top[0];
-    return station;
+    return best;
   } catch (e) { return null; }
 }
 
@@ -4348,7 +4206,7 @@ function renderArrets(note, arrets, type, depart, arrivee) {
     // Distance à la route AVANT la date de relevé (ajoutée en dernier par
     // buildStationDetail) : on l'insère juste avant plutôt qu'en bout de ligne.
     if (isFinite(a.station.distRoute)) {
-      const distNode = document.createTextNode(' (à ' + a.station.distRoute.toFixed(1) + ' km par la route)');
+      const distNode = document.createTextNode(' (à ' + a.station.distRoute.toFixed(1) + ' km de la route)');
       const dateSpan = detail.querySelector('.src-note');
       if (dateSpan) detail.insertBefore(distNode, dateSpan); else detail.appendChild(distNode);
     }
@@ -4487,7 +4345,7 @@ async function rechercherStationSurTrajet() {
 
     const detail = buildStationDetail(station, type, null, null, false);
     if (isFinite(station.distRoute)) {
-      detail.appendChild(document.createTextNode(' (à ' + station.distRoute.toFixed(1) + ' km par la route)'));
+      detail.appendChild(document.createTextNode(' (à ' + station.distRoute.toFixed(1) + ' km de la route)'));
     }
     note.appendChild(detail);
 
@@ -4502,7 +4360,7 @@ async function rechercherStationSurTrajet() {
   } else {
     const empty = document.createElement('div');
     empty.className = 'cheapest-empty';
-    empty.textContent = 'Aucune station accessible sans détour important (plus de ' + DETOUR_TRAJET_MAX_KM + ' km par la route).';
+    empty.textContent = 'Aucune station trouvée à moins de ~5 min de la route.';
     note.appendChild(empty);
   }
   applyStationTabVisibility();
@@ -4707,7 +4565,7 @@ async function afficherStationStandalone() {
   const label = document.createElement('span');
   label.className = 'cheapest-radius-label';
   label.id = 'cheapestRadiusLabelStation';
-  label.textContent = 'Rayon : ' + rayon + ' km par la route';
+  label.textContent = 'Rayon : ' + rayon + ' km';
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.className = 'cheapest-slider';
@@ -4717,7 +4575,7 @@ async function afficherStationStandalone() {
   slider.value = rayon;
   slider.setAttribute('aria-label', 'Rayon de recherche');
   slider.addEventListener('input', () => {
-    document.getElementById('cheapestRadiusLabelStation').textContent = 'Rayon : ' + slider.value + ' km par la route';
+    document.getElementById('cheapestRadiusLabelStation').textContent = 'Rayon : ' + slider.value + ' km';
   });
   slider.addEventListener('change', () => {
     lastStationSearchStandalone.rayon = parseInt(slider.value, 10);
@@ -5098,16 +4956,7 @@ async function getRoute(coords, apiKey, avoid) {
   const d = await r.json();
   const s = d.routes[0].summary;
   const polyline = d.routes[0].geometry;
-  // steps : chaque manœuvre avec le nom de la voie empruntée ("A 6", "N 7"…)
-  // et son index de point sur le tracé. Sert à résumer l'itinéraire en une
-  // phrase (voir construirePhraseItineraire).
-  const steps = [];
-  (d.routes[0].segments || []).forEach(seg => {
-    (seg.steps || []).forEach(st => steps.push({
-      name: st.name || '', distance: st.distance || 0, wayPoint: (st.way_points && st.way_points[0]) || 0,
-    }));
-  });
-  return { distanceKm: s.distance / 1000, dureeSec: s.duration, polyline, steps };
+  return { distanceKm: s.distance / 1000, dureeSec: s.duration, polyline };
 }
 
 // URL du relais Cloudflare Worker (ViaMichelin, Vinci-autoroutes - contourne le blocage CORS).
@@ -5125,86 +4974,6 @@ function tollCacheKey(c1, c2) {
   // source ou de format de détail.
   return 'toll6:' + r(c1[1]) + ',' + r(c1[0]) + '>' + r(c2[1]) + ',' + r(c2[0]);
 }
-// --- « Mon trajet en une phrase » : résume l'itinéraire comme on le
-// raconterait à quelqu'un ("Prends l'A6, à Beaune passe sur l'A31, puis la N57
-// jusqu'à l'arrivée"). On ne garde que les grands axes (autoroutes et
-// nationales), et seulement ceux parcourus assez longtemps pour compter. ---
-
-// Normalise un nom de voie ORS : "A 6" -> "A6", "N 7" -> "N7". Renvoie null si
-// ce n'est pas un grand axe (rue, départementale, voie sans nom…).
-function axeMajeur(nom) {
-  if (!nom) return null;
-  const m = String(nom).match(/\b([AN])\s?(\d+[a-z]?)\b/i);
-  if (!m) return null;
-  return m[1].toUpperCase() + m[2].toLowerCase();
-}
-
-// Suite des grands axes empruntés, dans l'ordre, avec le point du tracé où l'on
-// arrive dessus (pour retrouver la ville du changement). Les axes traversés sur
-// moins de MIN_KM sont ignorés (bretelles, raccords) et les répétitions
-// consécutives fusionnées (ORS découpe un même axe en plusieurs steps).
-function axesDuTrajet(steps, minKm) {
-  const MIN = (minKm || 12) * 1000;
-  const cumul = new Map(); // axe -> distance totale (m), pour filtrer ensuite
-  const suite = [];
-  (steps || []).forEach(st => {
-    const axe = axeMajeur(st.name);
-    if (!axe) return;
-    cumul.set(axe, (cumul.get(axe) || 0) + st.distance);
-    const dernier = suite[suite.length - 1];
-    if (dernier && dernier.axe === axe) dernier.distance += st.distance;
-    else suite.push({ axe, distance: st.distance, wayPoint: st.wayPoint });
-  });
-  // Garde les tronçons significatifs, puis refusionne les doublons devenus
-  // consécutifs après filtrage (ex. A6 · bretelle courte · A6).
-  const gardes = suite.filter(s => s.distance >= MIN || cumul.get(s.axe) >= MIN);
-  const out = [];
-  gardes.forEach(s => {
-    const d = out[out.length - 1];
-    if (d && d.axe === s.axe) d.distance += s.distance; else out.push({ ...s });
-  });
-  return out;
-}
-
-// Ville la plus proche d'un point du tracé (géocodage inverse BAN, gratuit et
-// sans clé). Best-effort : renvoie null si indisponible.
-async function villeProche(lat, lon) {
-  try {
-    const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lat=${lat}&lon=${lon}&limit=1`);
-    if (!r.ok) return null;
-    const d = await r.json();
-    const p = d.features && d.features[0] && d.features[0].properties;
-    return (p && (p.city || p.name)) || null;
-  } catch (e) { return null; }
-}
-
-// Compose la phrase à partir d'un itinéraire (steps + tracé). Les villes des
-// changements d'axe sont récupérées en parallèle (best-effort : si le
-// géocodage inverse échoue, la phrase reste correcte, juste sans la ville).
-async function construirePhraseItineraire(route, arrivee) {
-  const axes = axesDuTrajet(route && route.steps);
-  if (!axes.length) return 'Pas de grand axe sur ce trajet : petites routes du départ à l\'arrivée.';
-
-  let points = null;
-  try { points = decodePolyline(route.polyline, 5); } catch (e) {}
-  // Ville du point où l'on rejoint chaque axe (sauf le premier : on y est déjà
-  // au départ, la ville n'apporte rien).
-  const villes = await Promise.all(axes.map((a, i) => {
-    if (i === 0 || !points || !points[a.wayPoint]) return Promise.resolve(null);
-    const [lat, lon] = points[a.wayPoint];
-    return villeProche(lat, lon);
-  }));
-
-  const article = a => (a[0] === 'A' ? "l'" + a : 'la ' + a);
-  let phrase = 'Prends ' + article(axes[0].axe);
-  for (let i = 1; i < axes.length; i++) {
-    const ou = villes[i] ? `à ${villes[i]} ` : '';
-    phrase += `, ${ou}passe sur ${article(axes[i].axe)}`;
-  }
-  phrase += arrivee ? `, puis les dernières routes jusqu'à ${arrivee}.` : ", puis les dernières routes jusqu'à l'arrivée.";
-  return phrase;
-}
-
 function tollCacheGet(key) {
   try { const v = localStorage.getItem(key); return v === null ? undefined : JSON.parse(v); }
   catch(e) { return undefined; }
@@ -5485,47 +5254,6 @@ function renderResultMode() {
   // en a deux ; sert de secours sinon (pas de fiche pour les porter).
   const resTrajetLine = document.getElementById('resTrajetLine');
   if (resTrajetLine) resTrajetLine.style.display = unSeul ? 'block' : 'none';
-
-  // « Mon trajet en une phrase » : proposé dès qu'on a le détail des voies de
-  // l'itinéraire sélectionné. La phrase se recalcule au changement
-  // d'itinéraire (Avec/Sans péages), donc on repart de l'état replié.
-  const wrap = document.getElementById('phraseWrap');
-  if (wrap) {
-    const o = (routeOptionsData && routeOptionsData[selectedRouteOption]) || null;
-    const dispo = !!(o && Array.isArray(o.steps) && o.steps.length);
-    wrap.style.display = dispo ? 'block' : 'none';
-    const btn = document.getElementById('phraseBtn');
-    const txt = document.getElementById('phraseTexte');
-    if (btn) { btn.disabled = false; btn.textContent = 'Mon trajet en une phrase'; }
-    if (txt) { txt.style.display = 'none'; txt.textContent = ''; }
-  }
-}
-
-// Calcule (à la demande) et affiche la phrase qui résume l'itinéraire choisi.
-// À la demande car elle nécessite un géocodage inverse par changement d'axe :
-// inutile de le faire pour tout le monde à chaque calcul.
-async function afficherPhraseItineraire() {
-  const btn = document.getElementById('phraseBtn');
-  const txt = document.getElementById('phraseTexte');
-  if (!btn || !txt) return;
-  // Deuxième clic : on replie.
-  if (txt.style.display !== 'none') {
-    txt.style.display = 'none';
-    btn.textContent = 'Mon trajet en une phrase';
-    return;
-  }
-  const o = (routeOptionsData && routeOptionsData[selectedRouteOption]) || null;
-  if (!o) return;
-  btn.disabled = true;
-  btn.textContent = 'Un instant…';
-  const arrivee = (lastStationSurTrajet && lastStationSurTrajet.arrivee) || '';
-  let phrase;
-  try { phrase = await construirePhraseItineraire(o, arrivee); }
-  catch (e) { phrase = 'Résumé indisponible pour ce trajet.'; }
-  btn.disabled = false;
-  btn.textContent = 'Masquer la phrase';
-  txt.textContent = phrase;
-  txt.style.display = 'block';
 }
 
 // --- Comparateur des itinéraires : rapide (tout péage) et zéro péage,
@@ -6058,7 +5786,7 @@ async function calculer() {
     const mkOption = (route) => {
       const distA = route.distanceKm;
       const litresA = (distA * conso) / 100;
-      return { polyline: route.polyline, steps: route.steps, distA, dureeSec: route.dureeSec, litresA, coutA: litresA * prixActuel, coutPeage: null, peageDetails: null, unit };
+      return { polyline: route.polyline, distA, dureeSec: route.dureeSec, litresA, coutA: litresA * prixActuel, coutPeage: null, peageDetails: null, unit };
     };
 
     // Si le trajet le plus rapide et le trajet "zéro péage" sont en fait le
