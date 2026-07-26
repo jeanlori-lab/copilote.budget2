@@ -233,8 +233,9 @@
     /* Texte d'aide : masqué tant que l'optimisation est décochée (voir
        setOptimPlein), pour ne pas peser sur l'état par défaut. Ne réapparaît
        qu'une fois cochée, juste au-dessus des curseurs. */
-    .reservoir-hint { font-size: 10.5px; color: #b0bcc9; line-height: 1.4; margin-top: 8px; margin-bottom: 8px; display: none; }
-    .reservoir-hint.show { display: block; }
+    /* Toujours visible (coché ou non) : la phrase explique à quoi sert
+       l'option, c'est justement utile avant de la cocher. */
+    .reservoir-hint { font-size: 10.5px; color: #b0bcc9; line-height: 1.4; margin-top: 8px; margin-bottom: 8px; display: block; }
     .niveau-label strong { color: #1976d2; }
     .niveau-slider { width: 100%; accent-color: #1976d2; cursor: pointer; display: block; }
     /* Case à cocher minimaliste (pas un gros interrupteur) : toute la ligne
@@ -3125,9 +3126,8 @@ function setOptimPlein(on) {
   const toggle = document.getElementById('optimToggle');
   toggle.classList.toggle('on', on);
   toggle.setAttribute('aria-checked', on ? 'true' : 'false');
-  // Texte d'aide et curseurs masqués tant que c'est décoché : pas la peine
-  // d'expliquer un réglage qui n'est pas actif.
-  document.getElementById('reservoirHint').classList.toggle('show', on);
+  // Le texte d'aide reste affiché dans les deux états (il explique l'option,
+  // donc il sert surtout avant de la cocher) ; seuls les curseurs se grisent.
   document.getElementById('reservoirPanel').classList.toggle('reservoir-inactive', !on);
   document.getElementById('reservoirCapacite').disabled = !on;
   document.getElementById('niveauDepart').disabled = !on;
@@ -3579,6 +3579,54 @@ async function fetchAllODSRecords(baseUrl) {
   return records;
 }
 
+// Nombre de candidates (les moins chères) dont on mesure la vraie distance en
+// voiture : au-delà, l'appel matrice grossit sans rien changer au résultat.
+const MAX_CANDIDATES_ROUTE = 25;
+
+// --- Distances RÉELLES en voiture (et non à vol d'oiseau) ---
+// Une station à 3 km à vol d'oiseau peut être à 12 km par la route (rivière,
+// autoroute sans sortie, montagne...). On mesure donc la vraie distance de
+// conduite avec la matrice d'OpenRouteService : un seul appel pour toutes les
+// candidates, au lieu d'un calcul d'itinéraire par station.
+//
+// paires : [{ from: [lon, lat], to: [lon, lat] }, ...]
+// Renvoie un tableau de distances en km (null quand la route est impossible),
+// ou null si le service est indisponible - l'appelant retombe alors sur le
+// vol d'oiseau plutôt que de ne rien proposer.
+async function distancesEnVoiture(paires) {
+  if (!paires.length) return [];
+  const apiKey = (document.getElementById('apiKey') || {}).value;
+  if (!apiKey) return null;
+  // Points dédupliqués : la matrice attend une liste de lieux + des index.
+  const cle = p => p[0].toFixed(5) + ',' + p[1].toFixed(5);
+  const index = new Map();
+  const locations = [];
+  const idx = p => {
+    const k = cle(p);
+    if (!index.has(k)) { index.set(k, locations.length); locations.push(p); }
+    return index.get(k);
+  };
+  const sources = paires.map(p => idx(p.from));
+  const destinations = paires.map(p => idx(p.to));
+  try {
+    const r = await fetch('https://api.openrouteservice.org/v2/matrix/driving-car', {
+      method: 'POST',
+      headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ locations, sources, destinations, metrics: ['distance'], units: 'km' }),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    if (!d.distances) return null;
+    // distances[i][j] = source i -> destination j ; on ne veut que les paires
+    // (i, i), d'où la lecture en diagonale.
+    return paires.map((_, i) => {
+      const ligne = d.distances[i];
+      const v = ligne ? ligne[i] : null;
+      return (typeof v === 'number' && isFinite(v)) ? v : null;
+    });
+  } catch (e) { return null; }
+}
+
 // mode: 'min' (station la moins chère, par défaut) ou 'max' (la plus chère).
 async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
   rayonKm = rayonKm || STATION_RAYON_KM;
@@ -3595,7 +3643,7 @@ async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
     const records = await fetchAllODSRecords(url);
     if (!records.length) return null;
     const veutMax = mode === 'max';
-    let best = null;
+    const candidats = [];
     for (const rec of records) {
       const f = rec.fields || {};
       const prix = parseFloat(f[field]);
@@ -3607,11 +3655,37 @@ async function fetchStationMoinsChere(lat, lon, type, rayonKm, mode) {
       const geo = rec.geometry && rec.geometry.coordinates; // [lon, lat]
       const sLat = geo ? geo[1] : (f.latitude !== undefined ? parseFloat(f.latitude) : null);
       const sLon = geo ? geo[0] : (f.longitude !== undefined ? parseFloat(f.longitude) : null);
-      // Filtre client en plus du rayon serveur (sécurité si l'API renvoie plus large).
+      // Filtre client en plus du rayon serveur (sécurité si l'API renvoie plus
+      // large). À vol d'oiseau ici : c'est un PRÉ-filtre, la distance en
+      // voiture étant toujours >= celle à vol d'oiseau, aucune station
+      // réellement dans le rayon routier ne peut être écartée à tort.
       if (!illimite && sLat !== null && sLon !== null && distKm(lat, lon, sLat, sLon) > rayonKm) continue;
-      if (!best || (veutMax ? prix > best.prix : prix < best.prix)) best = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, maj };
+      candidats.push({ prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, maj });
     }
-    return best;
+    if (!candidats.length) return null;
+    candidats.sort((a, b) => veutMax ? b.prix - a.prix : a.prix - b.prix);
+
+    // "France entière" : aucune notion de rayon, on répond directement.
+    if (illimite) return candidats[0];
+
+    // Affine avec la VRAIE distance en voiture : le rayon demandé s'entend en
+    // km de conduite, pas à vol d'oiseau. On ne mesure que les meilleures
+    // candidates (un seul appel matrice) et on garde la meilleure qui tient
+    // réellement dans le rayon.
+    const top = candidats.slice(0, MAX_CANDIDATES_ROUTE)
+      .filter(c => c.lat !== null && c.lon !== null);
+    const dists = await distancesEnVoiture(top.map(c => ({ from: [lon, lat], to: [c.lon, c.lat] })));
+    if (dists) {
+      for (let i = 0; i < top.length; i++) {
+        if (dists[i] !== null && dists[i] <= rayonKm) return { ...top[i], distRoute: dists[i] };
+      }
+      // Aucune des meilleures candidates n'est accessible dans le rayon
+      // routier : mieux vaut le dire que proposer une station en réalité
+      // bien plus loin que ce qui est demandé.
+      return null;
+    }
+    // Service de distance indisponible : repli sur le vol d'oiseau.
+    return candidats[0];
   } catch (e) { return null; }
 }
 
@@ -3653,7 +3727,23 @@ async function fetchBorneRecharge(lat, lon, rayonKm) {
     if (!candidats.length) return null;
     const rapides = candidats.filter(c => c.puissance !== null && c.puissance >= BORNE_RAPIDE_KW);
     const pool = rapides.length ? rapides : candidats;
-    return pool.reduce((meilleure, c) => (!meilleure || c.dist < meilleure.dist) ? c : meilleure, null);
+    // Le rayon s'entend en km de conduite : on classe les plus proches à vol
+    // d'oiseau (pré-filtre exhaustif), puis on mesure la vraie distance par la
+    // route pour retenir la borne réellement la plus proche dans le rayon.
+    const parProximite = pool.slice().sort((a, b) => a.dist - b.dist).slice(0, MAX_CANDIDATES_ROUTE);
+    const dists = await distancesEnVoiture(parProximite.map(c => ({ from: [lon, lat], to: [c.lon, c.lat] })));
+    if (dists) {
+      let best = null;
+      for (let i = 0; i < parProximite.length; i++) {
+        const d = dists[i];
+        if (d === null || d > rayonKm) continue;
+        if (!best || d < best.distRoute) best = { ...parProximite[i], distRoute: d };
+      }
+      if (best) return best;
+      return null; // aucune borne réellement accessible dans le rayon routier
+    }
+    // Service de distance indisponible : repli sur le vol d'oiseau.
+    return parProximite[0];
   } catch (e) { return null; }
 }
 
@@ -3689,10 +3779,16 @@ function buildStationDetail(station, type, lat, lon, big) {
   // Distance affichée seulement si on a un point de référence (lat/lon) ET
   // les coordonnées de la station. (Ni la recherche "France entière" ni la
   // recherche "sur le trajet" n'ont de point de référence unique pertinent.)
+  // On privilégie la distance RÉELLE par la route (distRoute, mesurée lors de
+  // la recherche) ; le vol d'oiseau ne sert que de repli si elle manque.
   if (lat !== null && lat !== undefined && lon !== null && lon !== undefined
       && station.lat !== null && station.lon !== null) {
-    const dKm = distKm(lat, lon, station.lat, station.lon);
-    if (isFinite(dKm)) detail.appendChild(document.createTextNode(' (' + dKm.toFixed(1) + ' km)'));
+    if (isFinite(station.distRoute)) {
+      detail.appendChild(document.createTextNode(' (' + station.distRoute.toFixed(1) + ' km par la route)'));
+    } else {
+      const dKm = distKm(lat, lon, station.lat, station.lon);
+      if (isFinite(dKm)) detail.appendChild(document.createTextNode(' (' + dKm.toFixed(1) + ' km à vol d\'oiseau)'));
+    }
   }
   // Date du relevé du prix (transparence : un prix peut dater de plusieurs jours).
   if (station.maj) {
@@ -3875,7 +3971,7 @@ async function calculerStationsParTroncon() {
   if (!troncons.length) {
     const empty = document.createElement('div');
     empty.className = 'cheapest-empty';
-    empty.textContent = 'Aucune station trouvée à moins de ~5 min de la route sur les tronçons de ce trajet.';
+    empty.textContent = 'Aucune station accessible sans détour important (plus de ' + DETOUR_TRAJET_MAX_KM + ' km par la route) sur les tronçons de ce trajet.';
     note.appendChild(empty);
     // Bascule quand même sur le nouvel onglet : l'utilisateur voit que le
     // calcul a tourné et n'a rien trouvé, plutôt qu'un silence ambigu.
@@ -3909,7 +4005,7 @@ async function calculerStationsParTroncon() {
     // ajoutée par buildStationDetail en tout dernier) : on l'insère juste
     // avant, plutôt que de l'ajouter après coup en bout de ligne.
     if (isFinite(t.station.distRoute)) {
-      const distNode = document.createTextNode(' (à ' + t.station.distRoute.toFixed(1) + ' km de la route)');
+      const distNode = document.createTextNode(' (à ' + t.station.distRoute.toFixed(1) + ' km par la route)');
       const dateSpan = detail.querySelector('.src-note');
       if (dateSpan) detail.insertBefore(distNode, dateSpan); else detail.appendChild(distNode);
     }
@@ -4039,7 +4135,7 @@ async function rechercherStationMoinsChere() {
   const label = document.createElement('span');
   label.className = 'cheapest-radius-label';
   label.id = 'cheapestRadiusLabel';
-  label.textContent = 'Rayon : ' + rayon + ' km';
+  label.textContent = 'Rayon : ' + rayon + ' km par la route';
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.className = 'cheapest-slider';
@@ -4049,7 +4145,7 @@ async function rechercherStationMoinsChere() {
   slider.value = rayon;
   slider.setAttribute('aria-label', 'Rayon de recherche');
   slider.addEventListener('input', () => {
-    document.getElementById('cheapestRadiusLabel').textContent = 'Rayon : ' + slider.value + ' km';
+    document.getElementById('cheapestRadiusLabel').textContent = 'Rayon : ' + slider.value + ' km par la route';
   });
   slider.addEventListener('change', () => {
     lastStationSearch.rayon = parseInt(slider.value, 10);
@@ -4064,9 +4160,11 @@ async function rechercherStationMoinsChere() {
 // --- Station la moins chère SUR le trajet : parmi les stations proches de
 // la route (à vol d'oiseau, approximation de "à ~5 min en voiture"), on
 // cherche la moins chère - complète la recherche "près du départ". ---
-// ~5 min en voiture ≈ 4 km à vol d'oiseau (routes locales à ~50 km/h) : une
-// vraie isochrone par station coûterait un appel routage par candidate.
-const RAYON_TRAJET_KM = 4;
+// Détour maximal accepté pour aller faire le plein, mesuré en km RÉELS de
+// conduite depuis l'itinéraire (et non à vol d'oiseau) : ~5 km, soit quelques
+// minutes de détour. Sert aussi de rayon de pré-sélection à vol d'oiseau, ce
+// qui est exhaustif puisque la route est toujours au moins aussi longue.
+const DETOUR_TRAJET_MAX_KM = 5;
 let lastStationSurTrajet = null; // { polyline, type, depart, arrivee, distKm, conso }
 
 // fenetreKm (optionnel) : [minKm, maxKm] le long du trajet - ne considère que
@@ -4113,14 +4211,18 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
       if (la < minLat) minLat = la; if (la > maxLat) maxLat = la;
       if (ln < minLng) minLng = ln; if (ln > maxLng) maxLng = ln;
     }
-    const margeDeg = RAYON_TRAJET_KM / 100; // ~marge du rayon en degrés
+    const margeDeg = DETOUR_TRAJET_MAX_KM / 100; // ~marge du rayon en degrés
     minLat -= margeDeg; maxLat += margeDeg; minLng -= margeDeg; maxLng += margeDeg;
     const polygon = `(${minLat},${minLng}),(${minLat},${maxLng}),(${maxLat},${maxLng}),(${maxLat},${minLng})`;
     const url = `https://data.economie.gouv.fr/api/records/1.0/search/?dataset=prix-des-carburants-en-france-flux-instantane-v2&geofilter.polygon=${encodeURIComponent(polygon)}`;
     const records = await fetchAllODSRecords(url);
     if (!records.length) return null;
 
-    let best = null;
+    // Pré-sélection à vol d'oiseau : la distance en voiture étant toujours
+    // >= celle à vol d'oiseau, aucune station réellement à portée par la route
+    // n'est écartée à tort ici. Le tri fin se fait ensuite sur la vraie
+    // distance de conduite.
+    const candidats = [];
     for (const rec of records) {
       const f = rec.fields || {};
       const prix = parseFloat(f[field]);
@@ -4133,9 +4235,6 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
       const sLat = geo ? geo[1] : (f.latitude !== undefined ? parseFloat(f.latitude) : null);
       const sLon = geo ? geo[0] : (f.longitude !== undefined ? parseFloat(f.longitude) : null);
       if (sLat === null || sLon === null || isNaN(sLat) || isNaN(sLon)) continue;
-      // Élimine vite les candidates plus chères qu'une station déjà validée :
-      // pas la peine de mesurer leur distance à la route.
-      if (best && prix >= best.prix) continue;
       const cosLat = Math.cos(sLat * Math.PI / 180);
       let d2min = Infinity, idxMin = iStart;
       for (let i = iStart; i <= iEnd; i++) {
@@ -4145,11 +4244,31 @@ async function fetchStationSurTrajet(polyline5, type, fenetreKm) {
         const d2 = dLat * dLat + dLng * dLng;
         if (d2 < d2min) { d2min = d2; idxMin = i; }
       }
-      const distRoute = Math.sqrt(d2min);
-      if (distRoute > RAYON_TRAJET_KM) continue;
-      best = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, distRoute, kmSurTrajet: echKm[idxMin], maj };
+      const volOiseau = Math.sqrt(d2min);
+      if (volOiseau > DETOUR_TRAJET_MAX_KM) continue;
+      candidats.push({ prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon,
+        distRoute: volOiseau, kmSurTrajet: echKm[idxMin], maj, ancre: echantillons[idxMin] });
     }
-    return best;
+    if (!candidats.length) return null;
+    candidats.sort((a, b) => a.prix - b.prix);
+
+    // Mesure le VRAI détour par la route (quitter l'itinéraire, rejoindre la
+    // station) pour les meilleures candidates, et retient la moins chère dont
+    // le détour reste acceptable.
+    const top = candidats.slice(0, MAX_CANDIDATES_ROUTE);
+    const dists = await distancesEnVoiture(top.map(c => ({ from: [c.ancre[1], c.ancre[0]], to: [c.lon, c.lat] })));
+    if (dists) {
+      for (let i = 0; i < top.length; i++) {
+        if (dists[i] !== null && dists[i] <= DETOUR_TRAJET_MAX_KM) {
+          const { ancre, ...station } = top[i];
+          return { ...station, distRoute: dists[i] };
+        }
+      }
+      return null; // aucune station vraiment accessible sans détour excessif
+    }
+    // Service de distance indisponible : repli sur le vol d'oiseau.
+    const { ancre, ...station } = top[0];
+    return station;
   } catch (e) { return null; }
 }
 
@@ -4229,7 +4348,7 @@ function renderArrets(note, arrets, type, depart, arrivee) {
     // Distance à la route AVANT la date de relevé (ajoutée en dernier par
     // buildStationDetail) : on l'insère juste avant plutôt qu'en bout de ligne.
     if (isFinite(a.station.distRoute)) {
-      const distNode = document.createTextNode(' (à ' + a.station.distRoute.toFixed(1) + ' km de la route)');
+      const distNode = document.createTextNode(' (à ' + a.station.distRoute.toFixed(1) + ' km par la route)');
       const dateSpan = detail.querySelector('.src-note');
       if (dateSpan) detail.insertBefore(distNode, dateSpan); else detail.appendChild(distNode);
     }
@@ -4368,7 +4487,7 @@ async function rechercherStationSurTrajet() {
 
     const detail = buildStationDetail(station, type, null, null, false);
     if (isFinite(station.distRoute)) {
-      detail.appendChild(document.createTextNode(' (à ' + station.distRoute.toFixed(1) + ' km de la route)'));
+      detail.appendChild(document.createTextNode(' (à ' + station.distRoute.toFixed(1) + ' km par la route)'));
     }
     note.appendChild(detail);
 
@@ -4383,7 +4502,7 @@ async function rechercherStationSurTrajet() {
   } else {
     const empty = document.createElement('div');
     empty.className = 'cheapest-empty';
-    empty.textContent = 'Aucune station trouvée à moins de ~5 min de la route.';
+    empty.textContent = 'Aucune station accessible sans détour important (plus de ' + DETOUR_TRAJET_MAX_KM + ' km par la route).';
     note.appendChild(empty);
   }
   applyStationTabVisibility();
@@ -4588,7 +4707,7 @@ async function afficherStationStandalone() {
   const label = document.createElement('span');
   label.className = 'cheapest-radius-label';
   label.id = 'cheapestRadiusLabelStation';
-  label.textContent = 'Rayon : ' + rayon + ' km';
+  label.textContent = 'Rayon : ' + rayon + ' km par la route';
   const slider = document.createElement('input');
   slider.type = 'range';
   slider.className = 'cheapest-slider';
@@ -4598,7 +4717,7 @@ async function afficherStationStandalone() {
   slider.value = rayon;
   slider.setAttribute('aria-label', 'Rayon de recherche');
   slider.addEventListener('input', () => {
-    document.getElementById('cheapestRadiusLabelStation').textContent = 'Rayon : ' + slider.value + ' km';
+    document.getElementById('cheapestRadiusLabelStation').textContent = 'Rayon : ' + slider.value + ' km par la route';
   });
   slider.addEventListener('change', () => {
     lastStationSearchStandalone.rayon = parseInt(slider.value, 10);
