@@ -611,7 +611,13 @@
        ordinateur le libellé "Départ" est à côté du champ, sur mobile (≤480px)
        il passe au-dessus, ce qui décale le champ - d'où la marge plus négative
        en mobile pour garder le même écart visuel. */
-    .add-stop-row { justify-content: flex-end; margin-top: 0; margin-bottom: -6px; }
+    /* La marge négative fait remonter le bloc départ/arrivée PAR-DESSUS cette
+       rangée : sans position/z-index, la ligne "Départ" recouvrait le bouton et
+       captait les taps (bouton visible mais inutilisable sur mobile). On remet
+       donc la rangée au-dessus dans l'ordre d'empilement, et on limite sa
+       largeur au bouton lui-même pour ne pas bloquer les clics à côté. */
+    .add-stop-row { justify-content: flex-end; margin-top: 0; margin-bottom: -6px; position: relative; z-index: 2; pointer-events: none; }
+    .add-stop-row .link-btn { pointer-events: auto; }
     @media (max-width: 480px) { .add-stop-row { margin-bottom: -30px; } }
     .link-btn {
       background: none;
