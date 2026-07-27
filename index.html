@@ -559,6 +559,11 @@
       .param-row { flex-wrap: wrap; row-gap: 7px; }
       .param-label { width: auto; flex: none; font-size: 14px; }
       .param-input { flex: 1 0 100%; }
+      /* Les puces prennent toute la largeur : on les renvoie en dernier
+         (order) pour que "Mes trajets" et le bouton "Enregistrer ce trajet"
+         restent ensemble sur la première ligne, libellé à gauche et bouton à
+         droite, comme sur ordinateur. */
+      .trajet-row .param-input { order: 1; }
       /* Étapes : pas de ligne de libellé (numéro en placeholder), encadré + ✕ sur une ligne */
       .is-stop .param-label { display: none; }
       .is-stop .param-input { flex: 1 1 auto; }
@@ -686,7 +691,18 @@
        moins un (voir le commentaire là-bas : l'ancien sélecteur
        :has(:empty) était peu fiable sur iOS Safari). Même forme que la
        ligne "Mes véhicules" (.veh-row) : étiquette à gauche, puces à droite. */
-    .trajet-row { display: none; padding: 10px 0 6px; }
+    /* Ligne "Mes trajets" : toujours affichée, car elle porte le bouton
+       "Enregistrer ce trajet". Quand il n'y a aucun favori (.vide), on
+       masque le libellé et les puces, et on retire trait et marge du haut
+       pour retrouver exactement l'allure d'une simple ligne de bouton. */
+    .trajet-row { display: flex; padding: 10px 0 6px; }
+    .trajet-row.vide { border-bottom: none; padding-top: 0; }
+    .trajet-row.vide .param-label,
+    .trajet-row.vide .param-input { display: none; }
+    /* Aligné à droite, sur la même ligne que le libellé "Mes trajets". */
+    .trajet-save-btn { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+    /* Flèches circulaires du bouton Réinitialiser. */
+    .reset-icon { font-size: 14px; vertical-align: -1px; }
     /* Comparateur des itinéraires (péages / sans péages), en tête des
        résultats, affiché seulement quand pertinent : une ligne par option,
        la sélection change tout le détail en dessous (coûts, litres,
@@ -1705,7 +1721,7 @@
       </div>
 
       <div class="itinerary-controls" style="gap:14px; margin-top:-4px;">
-        <button type="button" class="link-btn" style="margin-left:auto;" onclick="enregistrerTrajet()">☆ Enregistrer ce trajet</button>
+        <button type="button" class="link-btn" style="margin-left:auto;" onclick="reinitialiserTrajet()"><span class="reset-icon">↻</span> Réinitialiser</button>
       </div>
       <!-- Trajets favoris (localStorage) : une puce = un itinéraire complet.
            Le champ de nom s'ouvre prérempli ("Départ → Arrivée"), modifiable. -->
@@ -1714,11 +1730,16 @@
         <button type="button" class="save-form-btn save-form-ok" onclick="confirmerTrajet()" aria-label="Enregistrer le trajet">✓</button>
         <button type="button" class="save-form-btn save-form-cancel" onclick="toggleTrajetForm(false)" aria-label="Annuler">✕</button>
       </div>
+      <!-- "Enregistrer ce trajet" vit sur la même ligne que "Mes trajets".
+           Cette ligne reste donc TOUJOURS affichée (le bouton doit rester
+           accessible même sans favori) ; c'est le libellé et les puces qui
+           disparaissent quand il n'y a rien d'enregistré (classe .vide). -->
       <div class="param-row trajet-row" id="trajetRow">
         <div class="param-label">Mes trajets</div>
         <div class="param-input">
           <div class="saved-chips" id="trajetChips"></div>
         </div>
+        <button type="button" class="link-btn trajet-save-btn" onclick="enregistrerTrajet()">☆ Enregistrer ce trajet</button>
       </div>
     </div>
 
@@ -2616,14 +2637,40 @@ function renderTrajetChips() {
         renderTrajetChips();
       })));
   });
-  // Affiche/masque la ligne "Mes trajets" en JS, comme "Mes véhicules"
-  // (renderVehChips). Pas de règle CSS `:has(.saved-chips:empty)` : sur iOS
-  // Safari, ce sélecteur ne se réévalue pas de façon fiable après l'ajout
+  // La ligne reste affichée (elle porte "Enregistrer ce trajet") : c'est le
+  // libellé et les puces qu'on masque via .vide quand il n'y a aucun favori.
+  // Piloté en JS et non par une règle CSS `:has(.saved-chips:empty)` : sur
+  // iOS Safari, ce sélecteur ne se réévalue pas de façon fiable après l'ajout
   // dynamique des puces, laissant le conteneur replié - les favoris
   // existaient alors dans le DOM mais n'étaient pas peints (~1 chargement
   // sur 4). Le pilotage en JS supprime cette dépendance capricieuse.
   const trajetRow = document.getElementById('trajetRow');
-  if (trajetRow) trajetRow.style.display = trajets.length ? 'flex' : 'none';
+  if (trajetRow) trajetRow.classList.toggle('vide', trajets.length === 0);
+}
+
+// Remet le trajet à zéro : départ, arrivée et étapes vidés, résultats
+// masqués. Ne touche pas au véhicule (carburant, consommation, réservoir) ni
+// aux favoris enregistrés : on réinitialise l'itinéraire, pas les réglages.
+function reinitialiserTrajet() {
+  const container = pointsEl();
+  container.textContent = '';
+  container.appendChild(makePointRow(''));
+  container.appendChild(makePointRow(''));
+  refreshPoints();
+
+  // Masque le résultat précédent et repasse la page en pleine largeur.
+  document.getElementById('sectionResultats').style.display = 'none';
+  document.querySelector('.page').classList.remove('has-results');
+  document.getElementById('legAdvice').style.display = 'none';
+  toggleTrajetForm(false);
+
+  // Oublie l'état du calcul précédent (sinon un onglet station pourrait
+  // encore proposer des résultats liés à l'ancien trajet).
+  lastResultData = null;
+  routeOptionsData = null;
+  lastStationSurTrajet = null;
+  lastStationSearch = null;
+  resetResultat();
 }
 function toggleTrajetForm(open) {
   document.getElementById('trajetSaveForm').classList.toggle('open', open);
