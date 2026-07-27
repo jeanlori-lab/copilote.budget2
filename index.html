@@ -3892,13 +3892,17 @@ async function calculerStationsParTroncon() {
   btn.textContent = 'Calcul en cours…';
 
   const troncons = [];
+  let echecs = 0; // tronçons dont l'itinéraire n'a pas pu être calculé
   for (let i = 0; i < coords.length - 1; i++) {
     try {
-      const route = await getRoute([coords[i], coords[i + 1]], apiKey, false);
+      // getRouteLeg : réutilise l'itinéraire déjà calculé par l'analyse des
+      // péages quand elle est passée par là (un trajet à 10 étapes faisait
+      // sinon 10 appels de plus, de quoi saturer le quota par minute).
+      const route = await getRouteLeg([coords[i], coords[i + 1]], apiKey);
       if (route.distanceKm < TRAJET_MIN_KM_STATIONS) continue;
       const station = await fetchStationSurTrajet(route.polyline, type, null);
       if (station) troncons.push({ depart: lieux[i], arrivee: lieux[i + 1], distKm: route.distanceKm, station });
-    } catch (e) { /* tronçon ignoré, best-effort */ }
+    } catch (e) { echecs++; }
   }
 
   note.textContent = '';
@@ -3910,7 +3914,12 @@ async function calculerStationsParTroncon() {
   if (!troncons.length) {
     const empty = document.createElement('div');
     empty.className = 'cheapest-empty';
-    empty.textContent = 'Aucune station trouvée à moins de ~5 min de la route sur les tronçons de ce trajet.';
+    // Distinguer une vraie absence de station d'un échec technique : dire
+    // "aucune station" alors que les itinéraires n'ont pas pu être calculés
+    // (quota du routeur, réseau) induisait complètement en erreur.
+    empty.textContent = echecs
+      ? 'Calcul indisponible pour ce trajet (trop de requêtes d\'itinéraire d\'un coup). Réessayez dans une minute.'
+      : 'Aucune station trouvée à moins de ~' + RAYON_TRAJET_KM + ' km de la route sur les tronçons de ce trajet.';
     note.appendChild(empty);
     // Bascule quand même sur le nouvel onglet : l'utilisateur voit que le
     // calcul a tourné et n'a rien trouvé, plutôt qu'un silence ambigu.
@@ -4099,9 +4108,11 @@ async function rechercherStationMoinsChere() {
 // --- Station la moins chère SUR le trajet : parmi les stations proches de
 // la route (à vol d'oiseau, approximation de "à ~5 min en voiture"), on
 // cherche la moins chère - complète la recherche "près du départ". ---
-// ~5 min en voiture ≈ 4 km à vol d'oiseau (routes locales à ~50 km/h) : une
-// vraie isochrone par station coûterait un appel routage par candidate.
-const RAYON_TRAJET_KM = 4;
+// Distance maximale entre la route et la station, à vol d'oiseau (une vraie
+// isochrone coûterait un appel de routage par candidate). 8 km : en zone rurale
+// ou de montagne, 4 km ne suffisaient pas et on ne proposait rien du tout
+// alors qu'une station un peu plus loin dépannerait volontiers.
+const RAYON_TRAJET_KM = 8;
 let lastStationSurTrajet = null; // { polyline, type, depart, arrivee, distKm, conso }
 
 // fenetreKm (optionnel) : [minKm, maxKm] le long du trajet - ne considère que
@@ -4989,6 +5000,24 @@ async function geocode(lieu) {
   return [f.lng, f.lat];
 }
 
+// Itinéraires de tronçons mis en cache pour la durée du calcul : sur un trajet
+// à étapes, l'analyse des péages ET la recherche de stations parcourent les
+// mêmes tronçons. Sans cache, chacune refait ses propres appels et on épuise
+// vite le quota par minute du routeur (l'erreur passait alors pour une absence
+// de station). Vidé à chaque nouveau calcul.
+let legRouteCache = new Map();
+function viderCacheTroncons() { legRouteCache = new Map(); }
+async function getRouteLeg(legCoords, apiKey) {
+  const cle = legCoords.map(c => c[0].toFixed(4) + ',' + c[1].toFixed(4)).join('>');
+  if (legRouteCache.has(cle)) return legRouteCache.get(cle);
+  const p = getRoute(legCoords, apiKey, false);
+  legRouteCache.set(cle, p);
+  // Un échec ne doit pas rester en cache : le prochain essai doit pouvoir
+  // retenter (l'API peut n'avoir été indisponible qu'un instant).
+  p.catch(() => legRouteCache.delete(cle));
+  return p;
+}
+
 async function getRoute(coords, apiKey, avoid) {
   // coords : tableau de points [lng, lat] (départ, étapes…, destination).
   // radiuses: -1 = rayon illimité pour raccrocher chaque point à la route la
@@ -4997,13 +5026,22 @@ async function getRoute(coords, apiKey, avoid) {
   // avoid : false (rapide) ou 'tollways' (zéro péage).
   const body = { coordinates: coords, geometry: true, radiuses: coords.map(() => -1) };
   if (avoid) body.options = { avoid_features: [avoid === true ? 'tollways' : avoid] };
-  const r = await fetch('https://api.openrouteservice.org/v2/directions/driving-car', {
+  const appel = () => fetch('https://api.openrouteservice.org/v2/directions/driving-car', {
     method: 'POST',
     headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
+  let r = await appel();
+  // 429 = trop de requêtes par minute. Fréquent sur un trajet à étapes, qui
+  // enchaîne un appel par tronçon : on patiente et on retente plutôt que de
+  // renoncer (l'échec passait sinon pour « aucune station trouvée »).
+  for (let essai = 0; r.status === 429 && essai < 2; essai++) {
+    await new Promise(res => setTimeout(res, 1500 * (essai + 1)));
+    r = await appel();
+  }
   if (!r.ok) {
     let msg = 'Erreur itinéraire (code ' + r.status + ')';
+    if (r.status === 429) msg = 'Trop de requêtes d\'itinéraire d\'un coup, réessayez dans une minute.';
     if (r.status === 403) msg = 'Clé API invalide ou quota dépassé';
     if (r.status === 404) msg = avoid
       ? 'Aucun itinéraire alternatif trouvé pour ce trajet.'
@@ -5682,7 +5720,7 @@ async function analyserTronconsSansPeage(coords, lieux, apiKey, conso) {
     try {
       const legCoords = [coords[i], coords[i + 1]];
       const [rapide, zero] = await Promise.all([
-        getRoute(legCoords, apiKey, false),
+        getRouteLeg(legCoords, apiKey), // mutualisé avec la recherche de stations
         getRoute(legCoords, apiKey, 'tollways').catch(() => null),
       ]);
       if (!zero || memeTrace(zero, rapide)) continue; // pas de péage sur ce tronçon
@@ -5827,6 +5865,7 @@ async function calculer() {
   // (il ne réapparaîtra que si le nouveau trajet a des étapes).
   legAdviceRunId++;
   document.getElementById('legAdvice').style.display = 'none';
+  viderCacheTroncons(); // les tronçons du trajet précédent n'ont plus cours
 
   try {
     // Géocode tous les points dans l'ordre : départ, étapes…, destination.
