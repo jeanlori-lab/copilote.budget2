@@ -4,7 +4,12 @@
 <link rel="icon" href="favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="96x96" href="favicon.png">
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <!-- Pas de maximum-scale/user-scalable=no : iOS les ignore de toute façon,
+       et sur Android ils empêchent carrément le zoom à deux doigts (problème
+       d'accessibilité). Le double-tap qui zoome est neutralisé proprement par
+       `touch-action: manipulation` (voir le style de body), qui laisse le
+       pincement à deux doigts fonctionner. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Futéroute</title>
   <meta name="description" content="Combien va vraiment coûter ce trajet ? Ça vaut le coup d'éviter les péages ? Quelle est la station la moins chère sur mon trajet ? Une seule réponse chiffrée, gratuit.">
   <link rel="canonical" href="https://futeroute.fr/">
@@ -76,6 +81,12 @@
       min-height: 100vh;
       padding: 24px 16px;
       color: #1a2433;
+      /* Désactive le zoom au double-tap (qui se déclenchait par erreur en
+         tapant vite sur un bouton), tout en laissant le défilement et le
+         zoom à deux doigts. Les éléments qui gèrent leurs propres gestes
+         (poignées de glisser-déposer, cartes Leaflet) gardent leur propre
+         touch-action, plus restrictif. */
+      touch-action: manipulation;
     }
 
     .page {
