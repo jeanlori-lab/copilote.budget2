@@ -4109,10 +4109,11 @@ async function rechercherStationMoinsChere() {
 // la route (à vol d'oiseau, approximation de "à ~5 min en voiture"), on
 // cherche la moins chère - complète la recherche "près du départ". ---
 // Distance maximale entre la route et la station, à vol d'oiseau (une vraie
-// isochrone coûterait un appel de routage par candidate). 8 km : en zone rurale
-// ou de montagne, 4 km ne suffisaient pas et on ne proposait rien du tout
-// alors qu'une station un peu plus loin dépannerait volontiers.
-const RAYON_TRAJET_KM = 8;
+// isochrone coûterait un appel de routage par candidate). 6 km : compromis
+// entre la couverture en zone rurale (4 km ne trouvaient parfois rien) et un
+// détour qui reste raisonnable - au-delà, on risque d'envoyer l'utilisateur
+// loin de sa route pour une économie qui ne le vaut pas.
+const RAYON_TRAJET_KM = 6;
 let lastStationSurTrajet = null; // { polyline, type, depart, arrivee, distKm, conso }
 
 // fenetreKm (optionnel) : [minKm, maxKm] le long du trajet - ne considère que
