@@ -1556,7 +1556,11 @@
        iOS Safari. */
     .cheapest-btn-row.two-links .cheapest-link {
       flex: 1 1 0;
+      min-width: 0;          /* autorise le bouton à se réduire au lieu de déborder */
       justify-content: center;
+      padding-left: 6px;     /* place gagnée sur les côtés : le libellé tient */
+      padding-right: 6px;
+      white-space: nowrap;   /* jamais de retour à la ligne au milieu du libellé */
     }
     .cheapest-empty { font-size: 12.5px; color: #90a4ae; font-style: italic; }
     .cheapest-note.loading { opacity: 0.6; }
@@ -3832,19 +3836,23 @@ function finaliserBtnRow(btnRow) {
 function buildNavStationRow(station, mapsUrl) {
   const row = document.createElement('div');
   row.className = 'cheapest-btn-row';
-  const lien = (href, img, label) => {
+  // Les deux logos ne remplissent pas leur cadre pareil (la flèche Maps occupe
+  // 92 % de sa hauteur, le rond Waze seulement 65 %) : à cadre égal, Maps
+  // paraissait bien plus gros. On règle donc chaque cadre pour que le DESSIN
+  // fasse la même taille à l'écran (~12 px).
+  const lien = (href, img, taille, label) => {
     const a = document.createElement('a');
     a.className = 'cheapest-link';
     a.href = href; a.target = '_blank'; a.rel = 'noopener';
     const ic = document.createElement('img');
     ic.src = img; ic.alt = '';
-    ic.style.cssText = 'width:15px;height:15px;object-fit:contain;margin-top:-2px;';
+    ic.style.cssText = `width:${taille}px;height:${taille}px;object-fit:contain;flex-shrink:0;`;
     a.appendChild(ic);
     a.appendChild(document.createTextNode(label));
     row.appendChild(a);
   };
-  lien(mapsUrl, 'logo fleche maps.png', 'Y aller avec Maps');
-  lien('https://waze.com/ul?ll=' + station.lat + ',' + station.lon + '&navigate=yes', 'logo waze.png', 'Y aller avec Waze');
+  lien(mapsUrl, 'logo fleche maps.png', 13, 'Y aller avec Maps');
+  lien('https://waze.com/ul?ll=' + station.lat + ',' + station.lon + '&navigate=yes', 'logo waze.png', 18, 'Y aller avec Waze');
   finaliserBtnRow(row);
   return row;
 }
