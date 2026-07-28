@@ -695,6 +695,52 @@
     .trajet-save-btn { flex-shrink: 0; white-space: nowrap; }
     /* Flèches circulaires du bouton Réinitialiser. */
     .reset-icon { font-size: 14px; vertical-align: -1px; }
+
+    /* ===== Proposition C : fil du trajet + pastilles de réglage ===== */
+    /* Fil vertical reliant départ et arrivée, avec une pastille verte au
+       départ et rouge à l'arrivée : le trajet se lit d'un coup d'œil. */
+    .points-wrap { position: relative; padding-left: 20px; }
+    .points-wrap::before {
+      content: ''; position: absolute; left: 4px; top: 26px; bottom: 26px;
+      width: 2px; background: #dbe7f5; border-radius: 2px;
+    }
+    #points .point-row { position: relative; }
+    #points .point-row::before {
+      content: ''; position: absolute; left: -20px; top: 50%; margin-top: -5px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #c3d3e4; border: 2px solid #fff; box-shadow: 0 0 0 1px #dbe7f5;
+    }
+    #points .point-row:first-child::before { background: #2e7d32; box-shadow: 0 0 0 1px #bcd9be; }
+    #points .point-row:last-child::before { background: #d1495b; box-shadow: 0 0 0 1px #eec2c8; }
+    /* Sur mobile le libellé "Départ" est au-dessus du champ : la pastille se
+       cale sur le champ lui-même, pas sur le milieu de la ligne. */
+    @media (max-width: 480px) {
+      .points-wrap { padding-left: 18px; }
+      #points .point-row:not(.is-stop)::before { top: auto; bottom: 20px; margin-top: 0; }
+    }
+
+    /* Trois pastilles compactes : Carburant · Conso · À bord. */
+    .c-pills { display: flex; gap: 6px; padding: 10px 0 2px; }
+    .c-pill {
+      flex: 1; min-width: 0; background: #fff; border: 1px solid #ecdcb8;
+      border-radius: 12px; padding: 7px 6px; font-family: inherit; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .c-pill:hover { border-color: #e2971a; }
+    .c-pill.ouvert { border-color: #e2971a; box-shadow: 0 0 0 2px rgba(226,151,26,.15); }
+    .c-pill .k {
+      font-size: 9.5px; font-weight: 800; text-transform: uppercase;
+      letter-spacing: .04em; color: #b39a63;
+    }
+    .c-pill .v {
+      font-size: 13px; font-weight: 800; color: #1a2433;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+    }
+    /* Les réglages détaillés sont repliés tant qu'on n'a pas tapé la pastille. */
+    .carburant-row, .conso-row, .pax-row { display: none; }
+    .carburant-row.ouvert, .conso-row.ouvert, .pax-row.ouvert { display: flex; }
+    .pax-aide { font-size: 11px; color: #b0bcc9; margin-left: 8px; }
     /* Comparateur des itinéraires (péages / sans péages), en tête des
        résultats, affiché seulement quand pertinent : une ligne par option,
        la sélection change tout le détail en dessous (coûts, litres,
@@ -1778,6 +1824,21 @@
         <div class="saved-chips" id="vehChips"></div>
       </div>
     </div>
+    <!-- Proposition C : trois pastilles compactes qui résument le véhicule et
+         le nombre d'occupants. Un tap ouvre le réglage correspondant, qui
+         reste exactement celui d'avant (rien n'est retiré, seulement replié). -->
+    <div class="c-pills" id="cPills">
+      <button type="button" class="c-pill" data-cible="carburant-row" onclick="ouvrirReglage(this)">
+        <span class="k">Carburant</span><span class="v" id="pillCarburant">SP95</span>
+      </button>
+      <button type="button" class="c-pill" data-cible="conso-row" onclick="ouvrirReglage(this)">
+        <span class="k">Conso</span><span class="v" id="pillConso">6,6 L</span>
+      </button>
+      <button type="button" class="c-pill" data-cible="pax-row" onclick="ouvrirReglage(this)">
+        <span class="k">À bord</span><span class="v" id="pillPax">1</span>
+      </button>
+    </div>
+
     <div class="param-row carburant-row">
       <div class="param-label">Carburant</div>
       <div class="param-input">
@@ -1807,6 +1868,20 @@
           <div class="conso-value"><input type="text" id="consoVal" class="conso-val-input" value="6,6" inputmode="decimal" readonly aria-label="Consommation au 100 km, modifiable"> <span class="roulette-unit" id="consoUnitLabel">L / 100 km</span></div>
           <button type="button" class="conso-arrow" id="consoPlus" aria-label="Augmenter la consommation">+</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Nombre d'occupants (partage des frais), réglable aussi depuis le
+         formulaire via la pastille "À bord". -->
+    <div class="param-row pax-row">
+      <div class="param-label">À bord</div>
+      <div class="param-input">
+        <span class="pax-stepper">
+          <button type="button" class="pax-btn" onclick="setNbPassagers(nbPassagers - 1)" aria-label="Une personne de moins">−</button>
+          <span class="pax-num" id="paxNumForm">1</span>
+          <button type="button" class="pax-btn" onclick="setNbPassagers(nbPassagers + 1)" aria-label="Une personne de plus">+</button>
+        </span>
+        <span class="pax-aide">conducteur compris</span>
       </div>
     </div>
 
@@ -2189,6 +2264,18 @@ async function searchPlaces(q, limit) {
 // synchronisation multi-appareils de propager les suppressions : sans
 // trace datée, l'appareil qui a encore l'élément en local le
 // "ressusciterait" à la fusion suivante.
+// Nombre d'occupants (partage des frais). Déclaré tôt : les pastilles de
+// réglage l'affichent dès l'initialisation du formulaire, bien avant le code
+// des résultats qui l'utilise pour diviser le total.
+const NB_PASSAGERS_KEY = 'futerouteNbPassagers';
+const NB_PASSAGERS_MAX = 9;
+let nbPassagers = (() => {
+  try {
+    const v = parseInt(localStorage.getItem(NB_PASSAGERS_KEY), 10);
+    return (v >= 1 && v <= NB_PASSAGERS_MAX) ? v : 1;
+  } catch (e) { return 1; }
+})();
+
 const VEHICULES_KEY = 'tratjetVehicules'; // [{ nom, type, conso, capacite, maj, del? }]
 const TRAJETS_KEY = 'tratjetTrajets';     // [{ nom, points: [départ, étapes…, arrivée], maj, del? }]
 const cleVehicule = v => (v && v.nom || '').trim().toLowerCase();
@@ -2967,6 +3054,43 @@ function setCarburant(value, btn, keepScope) {
   resetResultat(keepScope);
   chargerPrix();
   majUniteConso(keepScope);
+  majPastilles();
+}
+
+// --- Pastilles de réglage (proposition C) ---
+// Un tap ouvre le réglage visé et referme les autres : un seul panneau à la
+// fois, pour que le formulaire reste court. Re-taper referme.
+function ouvrirReglage(pill) {
+  const cible = pill.dataset.cible;
+  const deja = pill.classList.contains('ouvert');
+  document.querySelectorAll('.c-pill').forEach(p => p.classList.remove('ouvert'));
+  ['carburant-row', 'conso-row', 'pax-row'].forEach(c => {
+    const el = document.querySelector('.' + c);
+    if (el) el.classList.remove('ouvert');
+  });
+  if (deja) return;
+  pill.classList.add('ouvert');
+  const el = document.querySelector('.' + cible);
+  if (el) el.classList.add('ouvert');
+  // La roulette de consommation se positionne d'après sa largeur : elle doit
+  // être visible au moment du calcul, d'où le recalcul après ouverture.
+  if (cible === 'conso-row') consoSet(parseFloat(document.getElementById('conso').value) || 6.6, true);
+}
+
+// Résumé affiché sur les pastilles (carburant, consommation, occupants).
+function majPastilles() {
+  const type = document.getElementById('carburant').value;
+  const pc = document.getElementById('pillCarburant');
+  if (pc) pc.textContent = CARB_LABELS_VEH[type] || type;
+  const conso = parseFloat(document.getElementById('conso').value);
+  const pco = document.getElementById('pillConso');
+  if (pco && isFinite(conso)) {
+    pco.textContent = conso.toFixed(1).replace('.', ',') + (type === 'electrique' ? ' kWh' : ' L');
+  }
+  const pp = document.getElementById('pillPax');
+  if (pp) pp.textContent = String(nbPassagers);
+  const pf = document.getElementById('paxNumForm');
+  if (pf) pf.textContent = String(nbPassagers);
 }
 function setCarburantStation(value, btn) {
   document.getElementById('carburantStation').value = value;
@@ -3109,6 +3233,7 @@ function consoSet(v, doReset) {
   }
   const slider = document.getElementById('consoRoulette');
   if (slider) slider.setAttribute('aria-valuenow', v);
+  majPastilles();
   if (doReset) resetResultat(typeof doReset === 'string' ? doReset : undefined);
 }
 function consoInit() {
@@ -3219,6 +3344,7 @@ function consoInit() {
   }
 }
 consoInit();
+majPastilles(); // résumés des pastilles dès le chargement
 
 // Optimisation des pleins : repliée par défaut (vraiment optionnelle). Tant
 // que le panneau n'est pas déplié, getReservoirInfo() renvoie null et
@@ -5476,17 +5602,10 @@ function buildNavInline(routeKey) {
 // TOTAL (carburant + péages) qui se partage, pas seulement le carburant.
 // Mémorisé d'une visite à l'autre : quelqu'un qui covoiture régulièrement ne
 // veut pas le ressaisir à chaque calcul.
-const NB_PASSAGERS_KEY = 'futerouteNbPassagers';
-const NB_PASSAGERS_MAX = 9;
-let nbPassagers = (() => {
-  try {
-    const v = parseInt(localStorage.getItem(NB_PASSAGERS_KEY), 10);
-    return (v >= 1 && v <= NB_PASSAGERS_MAX) ? v : 1;
-  } catch (e) { return 1; }
-})();
 function setNbPassagers(n) {
   nbPassagers = Math.min(NB_PASSAGERS_MAX, Math.max(1, n));
   try { localStorage.setItem(NB_PASSAGERS_KEY, String(nbPassagers)); } catch (e) {}
+  majPastilles();
   // Réaffiche les résultats : seul le partage change, aucun recalcul d'API.
   if (lastResultData) renderResultMode();
 }
