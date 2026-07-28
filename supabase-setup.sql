@@ -10,8 +10,14 @@ create table if not exists public.user_data (
   user_id uuid primary key references auth.users(id) on delete cascade,
   vehicules jsonb not null default '[]',
   trajets jsonb not null default '[]',
+  lieux jsonb not null default '[]',
   updated_at timestamptz not null default now()
 );
+
+-- Bases créées avant l'ajout des lieux favoris : ajoute la colonne manquante.
+-- (Sans danger à rejouer : ne fait rien si elle existe déjà.)
+alter table public.user_data
+  add column if not exists lieux jsonb not null default '[]';
 
 alter table public.user_data enable row level security;
 
