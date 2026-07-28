@@ -2207,7 +2207,7 @@ function loadActifs(key) { return loadStore(key).filter(x => !x.del); }
 function saveStore(key, arr) {
   try { localStorage.setItem(key, JSON.stringify(arr)); } catch (e) {}
   // Connecté : relit le cloud, fusionne et repousse (débouncé).
-  if (key === VEHICULES_KEY || key === TRAJETS_KEY) planifierSync();
+  if (key === VEHICULES_KEY || key === TRAJETS_KEY || key === FAV_PLACES_KEY) planifierSync();
 }
 // Fusion de deux listes (locale + cloud) : pour chaque clé, la version la
 // plus récemment modifiée gagne - y compris une pierre tombale, qui efface
@@ -2238,6 +2238,9 @@ window.TRATJET_SUPABASE = window.TRATJET_SUPABASE || {
 };
 let sbClient = null;
 let sbUser = null;
+// Passe à true si la base n'a pas (encore) la colonne "lieux" : on cesse alors
+// de l'envoyer, pour que la synchronisation des véhicules et trajets continue.
+let colonneLieuxAbsente = false;
 let syncTimer = null;
 
 function initCompte() {
@@ -2426,9 +2429,11 @@ function viderFavorisLocaux() {
   try {
     localStorage.removeItem(VEHICULES_KEY);
     localStorage.removeItem(TRAJETS_KEY);
+    localStorage.removeItem(FAV_PLACES_KEY);
   } catch (e) {}
   renderVehChips();
   renderTrajetChips();
+  document.querySelectorAll('#points .point-input').forEach(syncStarForInput);
 }
 
 // Fusionne local + cloud (par clé, la version la plus récente gagne - voir
@@ -2457,8 +2462,17 @@ async function syncDepuisCloudInterne() {
   if (!sbClient || !sbUser) return;
   const statusEl = document.getElementById('syncStatus');
   try {
-    const { data, error } = await sbClient.from('user_data')
-      .select('vehicules,trajets').eq('user_id', sbUser.id).maybeSingle();
+    // La colonne "lieux" a été ajoutée après coup : si la base ne l'a pas
+    // encore (script SQL non rejoué), on relit sans elle plutôt que de casser
+    // toute la synchronisation des véhicules et trajets.
+    let data = null, error = null;
+    ({ data, error } = await sbClient.from('user_data')
+      .select('vehicules,trajets,lieux').eq('user_id', sbUser.id).maybeSingle());
+    if (error) {
+      colonneLieuxAbsente = true;
+      ({ data, error } = await sbClient.from('user_data')
+        .select('vehicules,trajets').eq('user_id', sbUser.id).maybeSingle());
+    }
     if (error) throw error;
     const distants = data || {};
     // Fusion par clé, la version la plus récente gagne (tombales comprises,
@@ -2467,12 +2481,16 @@ async function syncDepuisCloudInterne() {
       Array.isArray(distants.vehicules) ? distants.vehicules : [], cleVehicule);
     const traj = fusionnerListes(loadStore(TRAJETS_KEY),
       Array.isArray(distants.trajets) ? distants.trajets : [], cleTrajet);
+    const lieux = fusionnerListes(getFavPlacesRaw(),
+      (Array.isArray(distants.lieux) ? distants.lieux : []).map(normaliserLieu).filter(Boolean), cleLieu);
     try {
       localStorage.setItem(VEHICULES_KEY, JSON.stringify(veh));
       localStorage.setItem(TRAJETS_KEY, JSON.stringify(traj));
+      localStorage.setItem(FAV_PLACES_KEY, JSON.stringify(lieux));
     } catch (e) {}
     renderVehChips();
     renderTrajetChips();
+    document.querySelectorAll('#points .point-input').forEach(syncStarForInput);
     await syncVersCloud();
     dernierSyncMs = Date.now();
     if (statusEl) statusEl.textContent = '✓';
@@ -2501,12 +2519,21 @@ document.addEventListener('visibilitychange', () => {
 async function syncVersCloud() {
   if (!sbClient || !sbUser) return;
   try {
-    await sbClient.from('user_data').upsert({
+    const ligne = {
       user_id: sbUser.id,
       vehicules: loadStore(VEHICULES_KEY),
       trajets: loadStore(TRAJETS_KEY),
       updated_at: new Date().toISOString(),
-    });
+    };
+    if (!colonneLieuxAbsente) ligne.lieux = getFavPlacesRaw();
+    const { error } = await sbClient.from('user_data').upsert(ligne);
+    // Colonne "lieux" pas encore créée en base : on retente sans elle, pour ne
+    // pas perdre l'enregistrement des véhicules et trajets au passage.
+    if (error && !colonneLieuxAbsente) {
+      colonneLieuxAbsente = true;
+      delete ligne.lieux;
+      await sbClient.from('user_data').upsert(ligne);
+    }
   } catch (e) { /* best-effort : le local reste la référence */ }
 }
 
@@ -2764,14 +2791,31 @@ document.getElementById('trajetNom').addEventListener('keydown', e => {
 
 // --- Lieux favoris (départ/destination/étapes) : mémorisés dans le navigateur,
 // proposés en premier dans l'autocomplétion avant même d'avoir tapé un caractère.
+// Lieux favoris (l'étoile dans les champs départ/arrivée). Même format que les
+// véhicules et trajets - { nom, maj, del? } - pour être synchronisés entre
+// appareils par la même fusion horodatée. Les anciennes versions stockaient de
+// simples chaînes : elles sont converties à la lecture, sans rien perdre.
 const FAV_PLACES_KEY = 'favPlaces';
-const FAV_PLACES_MAX = 30;
+// Garde-fou très large : on ne supprime plus silencieusement les plus anciens
+// (c'est ce qui faisait "disparaître" des favoris au fil du temps), on borne
+// seulement pour ne pas saturer le stockage du navigateur.
+const FAV_PLACES_MAX = 500;
+function normaliserLieu(x) {
+  if (typeof x === 'string') return { nom: x, maj: 1 }; // ancien format
+  return x && typeof x.nom === 'string' ? x : null;
+}
+const cleLieu = l => ((l && l.nom) || '').trim().toLowerCase();
+// Toutes les entrées, tombales comprises (nécessaire à la synchronisation).
+function getFavPlacesRaw() {
+  return loadStore(FAV_PLACES_KEY).map(normaliserLieu).filter(Boolean);
+}
+// Les lieux réellement affichables, du plus récent au plus ancien.
 function getFavPlaces() {
-  try { return JSON.parse(localStorage.getItem(FAV_PLACES_KEY) || '[]'); } catch (e) { return []; }
+  return getFavPlacesRaw().filter(l => !l.del)
+    .sort((a, b) => (b.maj || 0) - (a.maj || 0))
+    .map(l => l.nom);
 }
-function setFavPlaces(arr) {
-  try { localStorage.setItem(FAV_PLACES_KEY, JSON.stringify(arr)); } catch (e) {}
-}
+function setFavPlacesRaw(arr) { saveStore(FAV_PLACES_KEY, arr.slice(0, FAV_PLACES_MAX)); }
 function isFavPlace(text) {
   const key = text.trim().toLowerCase();
   if (!key) return false;
@@ -2804,12 +2848,16 @@ function toggleFavPlace(text, star) {
   const val = text.trim();
   if (!val) return;
   const key = val.toLowerCase();
-  let favs = getFavPlaces();
-  const idx = favs.findIndex(f => f.trim().toLowerCase() === key);
-  let added;
-  if (idx >= 0) { favs.splice(idx, 1); added = false; }
-  else { favs = [val, ...favs].slice(0, FAV_PLACES_MAX); added = true; }
-  setFavPlaces(favs);
+  const favs = getFavPlacesRaw();
+  const idx = favs.findIndex(l => cleLieu(l) === key);
+  const existant = idx >= 0 ? favs[idx] : null;
+  const added = !existant || existant.del;
+  // Retrait = pierre tombale datée (et non suppression pure), sinon un autre
+  // appareil ressusciterait le favori à la synchronisation suivante.
+  const entree = { nom: val, maj: Date.now() };
+  if (!added) entree.del = true;
+  if (idx >= 0) favs[idx] = entree; else favs.unshift(entree);
+  setFavPlacesRaw(favs);
   updateStarUI(star, added);
   if (added) showFavHint(star);
 }
