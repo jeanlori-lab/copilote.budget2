@@ -755,6 +755,30 @@
       gap: 12px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #dbe7f5;
     }
     .route-detail-row .route-nav-inline { margin-top: 0; padding-top: 0; border-top: none; flex-shrink: 0; }
+    /* Partage des frais : une seule ligne discrète en bas de la fiche, avec un
+       petit sélecteur du nombre d'occupants (conducteur compris). */
+    .partage-row {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+      margin-top: 9px; padding-top: 9px; border-top: 1px solid #dbe7f5;
+      font-size: 12px; font-weight: 600; color: #607080;
+    }
+    .pax-stepper {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: #fff; border: 1px solid #dbe7f5; border-radius: 999px; padding: 2px 4px;
+    }
+    .pax-btn {
+      width: 22px; height: 22px; border-radius: 50%; border: none;
+      background: #eef4fb; color: #1976d2;
+      font-size: 14px; font-weight: 800; line-height: 1; cursor: pointer; font-family: inherit;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    .pax-btn:hover:not(:disabled) { background: #dbe9f8; }
+    .pax-btn:disabled { opacity: 0.35; cursor: default; }
+    .pax-num { min-width: 14px; text-align: center; font-size: 13px; font-weight: 800; color: #455060; }
+    .partage-part { color: #1565c0; font-weight: 800; }
+    /* Dans le bloc de secours "Coût & conso" (itinéraire unique), le trait du
+       haut ferait doublon avec celui du détail juste au-dessus. */
+    #coutDetailStandalone .partage-row { border-top: none; padding-top: 4px; }
     .cout-detail { min-width: 0; }
     .cout-detail-line { font-size: 12px; font-weight: 600; color: #607080; line-height: 1.6; }
     .cout-detail-line strong { color: #1a2433; font-weight: 800; }
@@ -5337,7 +5361,10 @@ function renderResultMode() {
   document.getElementById('coutSection').style.display = unSeul ? '' : 'none';
   const standalone = document.getElementById('coutDetailStandalone');
   standalone.textContent = '';
-  if (unSeul) standalone.appendChild(buildCoutDetail(d, isAR));
+  if (unSeul) {
+    standalone.appendChild(buildCoutDetail(d, isAR));
+    standalone.appendChild(buildPartageFrais(d, isAR));
+  }
 
   // Bouton Vinci sous Maps/Waze : seulement quand le prix n'a pas pu être calculé.
   const vinciBtn = document.getElementById('vinciLink');
@@ -5396,6 +5423,68 @@ function buildNavInline(routeKey) {
 // o : une option d'itinéraire (routeOptionsData[...]) ou lastResultData,
 // même forme. Construit à partir des données de l'option elle-même, donc
 // indépendant de l'affichage.
+// --- Partage des frais entre occupants ---
+// Le conducteur compte comme une part (usage courant entre amis), et c'est le
+// TOTAL (carburant + péages) qui se partage, pas seulement le carburant.
+// Mémorisé d'une visite à l'autre : quelqu'un qui covoiture régulièrement ne
+// veut pas le ressaisir à chaque calcul.
+const NB_PASSAGERS_KEY = 'futerouteNbPassagers';
+const NB_PASSAGERS_MAX = 9;
+let nbPassagers = (() => {
+  try {
+    const v = parseInt(localStorage.getItem(NB_PASSAGERS_KEY), 10);
+    return (v >= 1 && v <= NB_PASSAGERS_MAX) ? v : 1;
+  } catch (e) { return 1; }
+})();
+function setNbPassagers(n) {
+  nbPassagers = Math.min(NB_PASSAGERS_MAX, Math.max(1, n));
+  try { localStorage.setItem(NB_PASSAGERS_KEY, String(nbPassagers)); } catch (e) {}
+  // Réaffiche les résultats : seul le partage change, aucun recalcul d'API.
+  if (lastResultData) renderResultMode();
+}
+
+// Ligne « À − N + dans la voiture : X € chacun », intégrée à la fiche de
+// l'itinéraire choisi. Tant qu'on est seul, on n'affiche pas de montant (il
+// serait égal au total) mais le sélecteur reste visible pour être découvert.
+function buildPartageFrais(o, isAR) {
+  const f = isAR ? 2 : 1;
+  const total = o.coutA * f + (typeof o.coutPeage === 'number' ? o.coutPeage * f : 0);
+
+  const ligne = document.createElement('div');
+  ligne.className = 'partage-row';
+  ligne.appendChild(document.createTextNode('À'));
+
+  const step = document.createElement('span');
+  step.className = 'pax-stepper';
+  const bouton = (txt, delta, label) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'pax-btn';
+    b.textContent = txt;
+    b.setAttribute('aria-label', label);
+    b.disabled = (delta < 0 && nbPassagers <= 1) || (delta > 0 && nbPassagers >= NB_PASSAGERS_MAX);
+    b.addEventListener('click', (e) => { e.stopPropagation(); setNbPassagers(nbPassagers + delta); });
+    return b;
+  };
+  step.appendChild(bouton('−', -1, 'Une personne de moins'));
+  const num = document.createElement('span');
+  num.className = 'pax-num';
+  num.textContent = String(nbPassagers);
+  step.appendChild(num);
+  step.appendChild(bouton('+', +1, 'Une personne de plus'));
+  ligne.appendChild(step);
+
+  ligne.appendChild(document.createTextNode('dans la voiture'));
+  if (nbPassagers > 1) {
+    ligne.appendChild(document.createTextNode(' : '));
+    const part = document.createElement('strong');
+    part.className = 'partage-part';
+    part.textContent = fmtEur(total / nbPassagers) + ' chacun';
+    ligne.appendChild(part);
+  }
+  return ligne;
+}
+
 function buildCoutDetail(o, isAR) {
   const f = isAR ? 2 : 1;
   const box = document.createElement('div');
@@ -5599,6 +5688,7 @@ function renderRouteOptions() {
       detailRow.appendChild(buildCoutDetail(o, resultMode === 'ar'));
       detailRow.appendChild(buildNavInline(key));
       row.appendChild(detailRow);
+      row.appendChild(buildPartageFrais(o, resultMode === 'ar'));
     }
 
     wrap.appendChild(row);
