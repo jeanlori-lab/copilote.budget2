@@ -238,7 +238,7 @@
     /* Plus discret que les autres lignes du formulaire (véhicule, carburant,
        consommation) : une option secondaire n'a pas besoin du même poids
        visuel qu'un réglage principal. */
-    .reservoir-row { padding: 15px 0 8px; border-bottom-color: #eef2f6; border-bottom-width: 1px; }
+    .reservoir-row { padding: 15px 0 4px; border-bottom-color: #eef2f6; border-bottom-width: 1px; }
     .niveau-label { font-size: 11px; font-weight: 600; color: #90a4ae; margin-bottom: 4px; }
     .niveau-label-depart { margin-top: 10px; }
     /* Texte d'aide : masqué tant que l'optimisation est décochée (voir
@@ -246,7 +246,7 @@
        qu'une fois cochée, juste au-dessus des curseurs. */
     /* Toujours visible (coché ou non) : la phrase explique à quoi sert
        l'option, c'est justement utile avant de la cocher. */
-    .reservoir-hint { font-size: 12px; color: #b0bcc9; line-height: 1.45; margin-top: 8px; margin-bottom: 8px; display: block; }
+    .reservoir-hint { font-size: 12px; color: #b0bcc9; line-height: 1.45; margin-top: 8px; margin-bottom: 4px; display: block; }
     .niveau-label strong { color: #1976d2; }
     .niveau-slider { width: 100%; accent-color: #1976d2; cursor: pointer; display: block; }
     /* Case à cocher minimaliste (pas un gros interrupteur) : toute la ligne
@@ -272,6 +272,9 @@
     .optim-title { font-weight: 600; color: #90a4ae; font-size: 11.5px; line-height: 1.2; }
     .optim-switch-row.on .optim-title { color: #455060; }
     .reservoir-inactive { display: none; }
+    /* Rattrape la marge retirée sous le texte d'aide, mais seulement quand
+       les curseurs sont dépliés (état replié : aide collée au trait). */
+    #reservoirPanel:not(.reservoir-inactive) { margin-top: 4px; }
     .cheapest-fuel-note { font-size: 12px; color: #607080; margin-top: 6px; line-height: 1.45; }
     /* Badge "économie" sous la station recommandée : ce qu'on gagne en y
        faisant le plein par rapport au prix moyen national. */
