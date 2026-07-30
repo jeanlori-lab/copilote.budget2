@@ -4,7 +4,6 @@
   <url><loc>https://futeroute.fr/trajets/paris-lyon.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-marseille.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-bordeaux.html</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://futeroute.fr/trajets/paris-nantes.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-lille.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-strasbourg.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-toulouse.html</loc><changefreq>weekly</changefreq></url>
@@ -23,6 +22,7 @@
   <url><loc>https://futeroute.fr/trajets/lyon-nice.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/lyon-strasbourg.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/lyon-toulouse.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/lyon-geneve.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-toulouse.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-bordeaux.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-rennes.html</loc><changefreq>weekly</changefreq></url>
@@ -43,6 +43,7 @@
   <url><loc>https://futeroute.fr/trajets/paris-avignon.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-toulon.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-pau.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/paris-brest.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-angers.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-limoges.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-poitiers.html</loc><changefreq>weekly</changefreq></url>
@@ -61,7 +62,7 @@
   <url><loc>https://futeroute.fr/trajets/lyon-saint-etienne.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/marseille-montpellier.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/marseille-avignon.html</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://futeroute.fr/trajets/marseille-aix-en-provence.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/marseille-toulon.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-bayonne.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-biarritz.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-la-rochelle.html</loc><changefreq>weekly</changefreq></url>
