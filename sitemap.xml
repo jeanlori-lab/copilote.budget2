@@ -27,7 +27,7 @@
   <url><loc>https://futeroute.fr/trajets/bordeaux-toulouse.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-bordeaux.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-rennes.html</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://futeroute.fr/trajets/marseille-nice.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/marseille-toulouse.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/lille-strasbourg.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/toulouse-montpellier.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/strasbourg-nancy.html</loc><changefreq>weekly</changefreq></url>
@@ -47,7 +47,7 @@
   <url><loc>https://futeroute.fr/trajets/paris-angers.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-limoges.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-poitiers.html</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://futeroute.fr/trajets/paris-besancon.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/paris-chambery.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-perpignan.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-amiens.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/paris-le-havre.html</loc><changefreq>weekly</changefreq></url>
@@ -67,7 +67,7 @@
   <url><loc>https://futeroute.fr/trajets/bordeaux-biarritz.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-la-rochelle.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/bordeaux-limoges.html</loc><changefreq>weekly</changefreq></url>
-  <url><loc>https://futeroute.fr/trajets/toulouse-perpignan.html</loc><changefreq>weekly</changefreq></url>
+  <url><loc>https://futeroute.fr/trajets/toulouse-pau.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-angers.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/nantes-la-rochelle.html</loc><changefreq>weekly</changefreq></url>
   <url><loc>https://futeroute.fr/trajets/strasbourg-metz.html</loc><changefreq>weekly</changefreq></url>
