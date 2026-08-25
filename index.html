@@ -406,6 +406,10 @@
     }
     /* Bloc lieu (onglet station) : "position actuelle" à gauche, "France entière" à droite. */
     .lieu-controls { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    /* Dans l'onglet station, le sélecteur carburant est actuellement replié par
+       la règle commune .carburant-row { display:none }. On neutralise donc
+       uniquement son conteneur visuel pour éviter la fine barre jaune vide. */
+    #modeStation .section-carburant { background: transparent; border: 0; padding: 0; margin: 0; }
     .carburant-row { padding: 15px 0 33px; }
     .carburant-row .param-input { position: relative; }
     .carburant-row .prix-actuel {
