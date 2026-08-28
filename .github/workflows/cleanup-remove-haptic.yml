@@ -1,0 +1,73 @@
+name: Retire le retour haptique de la roulette
+
+on:
+  push:
+    branches:
+      - cleanup/remove-haptic-roulette
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.event.head_commit.message != 'Retire le workflow ponctuel du nettoyage haptique'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cleanup/remove-haptic-roulette
+      - name: Retirer le code haptique
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('index.html')
+          text = path.read_text(encoding='utf-8')
+
+          block = """// Petit retour haptique (Android via l'API Vibration ; Safari iOS ne l'expose
+          // pas, aucune astuce fiable n'existe côté web pour la remplacer).
+          let _lastHaptic = 0;
+          function hapticTick() {
+            if (typeof navigator === 'undefined' || !navigator.vibrate) return;
+            const now = Date.now();
+            if (now - _lastHaptic < 20) return; // throttle : évite la surchauffe en drag rapide
+            _lastHaptic = now;
+            navigator.vibrate(3);
+          }
+
+          """
+          if text.count(block) != 1:
+              raise SystemExit('Bloc haptique attendu introuvable ou dupliqué')
+          text = text.replace(block, '')
+
+          drag = """    const prev = consoValeur();
+              consoSet(startVal - (e.clientX - startX) / CONSO_PPU, true);
+              if (consoValeur() !== prev) hapticTick(); // petite vibration à chaque cran
+          """
+          if text.count(drag) != 1:
+              raise SystemExit('Appel haptique du glissement introuvable ou dupliqué')
+          text = text.replace(drag, """    consoSet(startVal - (e.clientX - startX) / CONSO_PPU, true);
+          """)
+
+          momentum = """      const prevVal = consoValeur();
+                consoSet(consoValeur() + v * dt, true);
+                if (consoValeur() !== prevVal) hapticTick();
+          """
+          if text.count(momentum) != 1:
+              raise SystemExit('Appel haptique de l’inertie introuvable ou dupliqué')
+          text = text.replace(momentum, """      consoSet(consoValeur() + v * dt, true);
+          """)
+
+          if 'hapticTick' in text or '_lastHaptic' in text or 'navigator.vibrate' in text:
+              raise SystemExit('Référence haptique restante dans index.html')
+
+          path.write_text(text, encoding='utf-8')
+          PY
+      - name: Committer le nettoyage
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- index.html
+          git diff --cached --quiet && exit 0
+          git commit -m "Retire le retour haptique de la roulette"
+          git push origin HEAD:cleanup/remove-haptic-roulette
