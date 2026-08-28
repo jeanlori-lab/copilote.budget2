@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Futéroute — test haptique iPhone</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#1a2433;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px 16px 40px}.page{max-width:520px;margin:auto}h1{font-size:26px;margin:0 0 8px}.lead{font-size:14px;color:#607080;line-height:1.5;margin:0 0 18px}.card{background:#fff;border-radius:16px;padding:18px;margin:12px 0;box-shadow:0 4px 16px rgba(15,23,41,.07)}h2{font-size:15px;margin:0 0 8px}.hint{font-size:12px;color:#607080;line-height:1.45;margin:0 0 14px}.row{display:flex;align-items:center;gap:12px}.status{font-size:12px;border-radius:10px;padding:10px 12px;background:#f5f7fa;line-height:1.45;margin-bottom:14px;word-break:break-word}.native-switch{font-size:18px}.native-range{width:100%;height:42px}.value{min-width:54px;text-align:right;font-variant-numeric:tabular-nums;font-weight:700}.roulette{height:58px;border:1.5px solid #cfd8e0;border-radius:12px;position:relative;overflow:hidden;touch-action:none;user-select:none;background:#fff}.track{position:absolute;left:50%;top:0;height:100%;width:1800px;background-image:repeating-linear-gradient(90deg,#bac5d0 0,#bac5d0 1px,transparent 1px,transparent 8px);background-position:0 100%;background-size:8px 14px;will-change:transform}.center{position:absolute;left:50%;top:0;bottom:0;width:2px;background:#e2971a;transform:translateX(-50%);pointer-events:none}.bigvalue{text-align:center;font-size:22px;font-weight:750;margin-top:10px}.ok{color:#2e7d32}.warn{color:#a55b00}.foot{font-size:11px;color:#7a8795;line-height:1.45;margin-top:16px}
+</style>
+</head>
+<body><main class="page">
+<h1>Test haptique iPhone</h1>
+<p class="lead">Trois tests pour identifier ce que Safari autorise réellement sur cet iPhone. Fais-les dans Safari, pas dans l’aperçu intégré d’une autre app.</p>
+<div id="status" class="status"></div>
+
+<section class="card">
+<h2>1. Switch natif Safari</h2>
+<p class="hint">Touche directement le switch. Safari iOS 18+ est censé produire un tap haptique natif.</p>
+<div class="row"><input id="nativeSwitch" class="native-switch" type="checkbox" switch><strong>Je dois sentir un tap</strong></div>
+</section>
+
+<section class="card">
+<h2>2. Slider HTML natif</h2>
+<p class="hint">Glisse le curseur. Si tu sens des crans ici, on peut remplacer uniquement la couche tactile de la roulette Futéroute par ce contrôle sur iPhone.</p>
+<div class="row"><input id="nativeRange" class="native-range" type="range" min="10" max="300" step="1" value="66"><span id="nativeValue" class="value">6,6</span></div>
+</section>
+
+<section class="card">
+<h2>3. Roulette + déclenchement WebKit</h2>
+<p class="hint">Glisse la règle. Cette variante tente le contournement du switch à chaque cran, sans modifier visuellement la roulette.</p>
+<div id="roulette" class="roulette" role="slider" aria-valuemin="1" aria-valuemax="30" aria-valuenow="6.6" tabindex="0"><div id="track" class="track"></div><div class="center"></div></div>
+<div id="rouletteValue" class="bigvalue">6,6 L / 100 km</div>
+</section>
+
+<p class="foot">Résultat utile : dis-moi simplement « 1 oui/non, 2 oui/non, 3 oui/non ». Si seul le 1 fonctionne, Safari bloque le haptique programmatique et il n’existe pas de moyen web fiable pour faire vibrer la roulette à chaque cran.</p>
+</main>
+<script>
+const status=document.getElementById('status');
+const ios=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+status.innerHTML=`Appareil iOS détecté : <strong>${ios?'oui':'non'}</strong><br>Vibration API : <strong>${typeof navigator.vibrate==='function'?'oui':'non'}</strong><br><span style="font-size:10px">${navigator.userAgent}</span>`;
+
+const nativeRange=document.getElementById('nativeRange');
+const nativeValue=document.getElementById('nativeValue');
+nativeRange.addEventListener('input',()=>{nativeValue.textContent=(Number(nativeRange.value)/10).toFixed(1).replace('.',',')});
+
+let lastPulse=0;
+function webkitPulse(){
+  if(typeof navigator.vibrate==='function'){navigator.vibrate(3);return true;}
+  if(!ios)return false;
+  const now=performance.now();
+  if(now-lastPulse<28)return false;
+  lastPulse=now;
+  const label=document.createElement('label');
+  const input=document.createElement('input');
+  input.type='checkbox';
+  input.setAttribute('switch','');
+  input.tabIndex=-1;
+  input.setAttribute('aria-hidden','true');
+  Object.assign(label.style,{position:'fixed',left:'2px',top:'2px',width:'52px',height:'32px',opacity:'0.01',zIndex:'-1',pointerEvents:'none'});
+  Object.assign(input.style,{width:'52px',height:'32px',margin:'0'});
+  label.appendChild(input);
+  document.body.appendChild(label);
+  label.click();
+  setTimeout(()=>label.remove(),40);
+  return true;
+}
+
+const roulette=document.getElementById('roulette');
+const track=document.getElementById('track');
+const out=document.getElementById('rouletteValue');
+let value=6.6,drag=false,startX=0,startValue=0,prevStep=66;
+const PPU=80;
+function render(){
+  value=Math.max(1,Math.min(30,Math.round(value*10)/10));
+  const step=Math.round(value*10);
+  track.style.transform=`translateX(${-((value-6.6)*PPU)}px)`;
+  out.textContent=value.toFixed(1).replace('.',',')+' L / 100 km';
+  roulette.setAttribute('aria-valuenow',value.toFixed(1));
+  if(step!==prevStep){prevStep=step;webkitPulse();}
+}
+roulette.addEventListener('pointerdown',e=>{drag=true;startX=e.clientX;startValue=value;roulette.setPointerCapture(e.pointerId);e.preventDefault()});
+roulette.addEventListener('pointermove',e=>{if(!drag)return;value=startValue-(e.clientX-startX)/PPU;render();e.preventDefault()});
+roulette.addEventListener('pointerup',()=>{drag=false});
+roulette.addEventListener('pointercancel',()=>{drag=false});
+roulette.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'){value-=.1;render();e.preventDefault()}if(e.key==='ArrowRight'){value+=.1;render();e.preventDefault()}});
+render();
+</script>
+</body></html>
