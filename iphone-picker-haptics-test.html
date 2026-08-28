@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Futéroute — test picker haptique iPhone</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#1a2433;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding:24px 16px 40px}.page{max-width:520px;margin:auto}.card{background:#fff;border-radius:16px;padding:18px;box-shadow:0 4px 16px rgba(15,23,41,.07)}h1{font-size:24px;margin:0 0 8px}.lead{font-size:14px;color:#607080;line-height:1.5;margin:0 0 18px}label{display:block;font-size:13px;font-weight:700;margin-bottom:8px}select{width:100%;font:inherit;font-size:18px;padding:12px;border:1.5px solid #cfd8e0;border-radius:12px;background:#fff;color:#1a2433}.value{font-size:22px;font-weight:750;text-align:center;margin-top:18px}.hint{font-size:12px;color:#607080;line-height:1.5;margin:16px 0 0}
+</style>
+</head>
+<body><main class="page"><section class="card">
+<h1>Test 4 — picker natif iPhone</h1>
+<p class="lead">Touche le champ ci-dessous puis fais défiler plusieurs valeurs de consommation dans le sélecteur iOS.</p>
+<label for="consoPicker">Consommation</label>
+<select id="consoPicker" aria-label="Consommation au 100 km"></select>
+<div id="value" class="value">6,6 L / 100 km</div>
+<p class="hint">Ce test utilise uniquement un vrai contrôle natif Safari. Si tu sens des crans pendant le défilement du picker, on peut envisager un mode iPhone basé sur ce contrôle. Si tu ne sens rien, il n’existe pas de voie web fiable pour produire la vibration demandée à chaque cran de la roulette.</p>
+</section></main>
+<script>
+const picker=document.getElementById('consoPicker');
+for(let n=10;n<=300;n++){
+  const option=document.createElement('option');
+  option.value=(n/10).toFixed(1);
+  option.textContent=(n/10).toFixed(1).replace('.',',')+' L / 100 km';
+  if(n===66) option.selected=true;
+  picker.appendChild(option);
+}
+const out=document.getElementById('value');
+picker.addEventListener('change',()=>{out.textContent=picker.value.replace('.',',')+' L / 100 km'});
+</script>
+</body></html>
