@@ -5221,7 +5221,7 @@ async function getRoute(coords, apiKey, avoid) {
   // avoid : false (rapide) ou 'tollways' (zéro péage).
   const body = { coordinates: coords, geometry: true, radiuses: coords.map(() => -1) };
   if (avoid) body.options = { avoid_features: [avoid === true ? 'tollways' : avoid] };
-  const appel = () => fetch('https://api.openrouteservice.org/v2/directions/driving-car', {
+  const appel = () => fetch('https://api.heigit.org/openrouteservice/v2/directions/driving-car', {
     method: 'POST',
     headers: { 'Authorization': apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
