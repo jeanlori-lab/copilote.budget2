@@ -1,0 +1,44 @@
+name: One-shot migrate ORS API host
+
+on:
+  push:
+    branches:
+      - automation/migrate-ors-heigit
+    paths:
+      - .github/workflows/migrate-ors-heigit.yml
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Switch OpenRouteService to HeiGIT API
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+          old = 'https://api.openrouteservice.org/v2/directions/driving-car'
+          new = 'https://api.heigit.org/openrouteservice/v2/directions/driving-car'
+          count = s.count(old)
+          if count != 1:
+              raise SystemExit(f'Expected exactly one deprecated ORS endpoint, found {count}')
+          p.write_text(s.replace(old, new), encoding='utf-8')
+          PY
+      - name: Verify deprecated host is gone
+        run: |
+          if grep -R "api.openrouteservice.org" index.html; then
+            echo "Deprecated ORS host still present" >&2
+            exit 1
+          fi
+          grep -q "https://api.heigit.org/openrouteservice/v2/directions/driving-car" index.html
+      - name: Commit the fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Migre les itinéraires vers api.heigit.org"
+          git push
