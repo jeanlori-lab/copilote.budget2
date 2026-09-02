@@ -20,6 +20,12 @@ const ROOT = path.join(__dirname, '..');
 const TRAJETS = JSON.parse(fs.readFileSync(path.join(ROOT, 'trajets/trajets.json'), 'utf8'));
 const SITE_URL = 'https://futeroute.fr';
 const PORT = 8973;
+const CALCUL_TIMEOUT_MS = 45000;
+const MAX_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [15000, 45000];
+const DELAY_BETWEEN_ROUTES_MS = 1000;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function fmtEur(n) {
   return n.toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €';
@@ -48,24 +54,93 @@ function startServer() {
 
 async function calculerTrajet(browser, depart, arrivee) {
   const page = await browser.newPage();
-  await page.goto(`http://localhost:${PORT}/index.html?from=${encodeURIComponent(depart)}&to=${encodeURIComponent(arrivee)}`);
-  // Attend que le calcul réel (géocodage + itinéraire + péages) ait abouti.
-  await page.waitForFunction(
-    () => typeof routeOptionsData !== 'undefined' && routeOptionsData && routeOptionsData.rapide && typeof routeOptionsData.rapide.coutA === 'number',
-    { timeout: 30000 },
-  );
-  const data = await page.evaluate(() => {
-    const o = routeOptionsData;
-    const r = o.rapide, z = o.zero || null;
-    return {
-      distanceKm: r.distA, dureeSec: r.dureeSec, coutCarburant: r.coutA,
-      coutPeage: typeof r.coutPeage === 'number' ? r.coutPeage : null,
-      peageSource: r.peageSource || null,
-      zero: z ? { distanceKm: z.distA, dureeSec: z.dureeSec, coutCarburant: z.coutA } : null,
-    };
+  const networkFailures = [];
+  const rememberFailure = message => {
+    if (message && !networkFailures.includes(message)) networkFailures.push(message);
+  };
+  const requestLabel = url => {
+    try {
+      const u = new URL(url);
+      return u.host + u.pathname;
+    } catch (_) {
+      return url;
+    }
+  };
+
+  // Les erreurs fetch/XHR sont conservées pour remplacer le timeout Playwright
+  // opaque par le vrai service et le vrai code HTTP dans les logs de l'Action.
+  page.on('response', response => {
+    const request = response.request();
+    if (['fetch', 'xhr'].includes(request.resourceType()) && !response.ok()) {
+      rememberFailure(`${requestLabel(response.url())} HTTP ${response.status()}`);
+    }
   });
-  await page.close();
-  return data;
+  page.on('requestfailed', request => {
+    if (['fetch', 'xhr'].includes(request.resourceType())) {
+      const failure = request.failure();
+      rememberFailure(`${requestLabel(request.url())} : ${failure ? failure.errorText : 'échec réseau'}`);
+    }
+  });
+
+  try {
+    await page.goto(
+      `http://localhost:${PORT}/index.html?from=${encodeURIComponent(depart)}&to=${encodeURIComponent(arrivee)}`,
+      { waitUntil: 'domcontentloaded', timeout: 20000 },
+    );
+
+    // Sort dès qu'un résultat existe OU que l'application affiche une erreur.
+    // Sans ce second cas, un HTTP 429/4xx/5xx était masqué par 30 s d'attente.
+    await page.waitForFunction(
+      () => {
+        const dataReady = typeof routeOptionsData !== 'undefined'
+          && routeOptionsData
+          && routeOptionsData.rapide
+          && typeof routeOptionsData.rapide.coutA === 'number';
+        const errorEl = document.getElementById('error');
+        const calculationFailed = errorEl
+          && getComputedStyle(errorEl).display !== 'none'
+          && errorEl.textContent.trim().length > 0;
+        return dataReady || calculationFailed;
+      },
+      { timeout: CALCUL_TIMEOUT_MS },
+    );
+
+    const result = await page.evaluate(() => {
+      const dataReady = typeof routeOptionsData !== 'undefined'
+        && routeOptionsData
+        && routeOptionsData.rapide
+        && typeof routeOptionsData.rapide.coutA === 'number';
+      if (!dataReady) {
+        const errorEl = document.getElementById('error');
+        return { error: errorEl && errorEl.textContent.trim() || 'Calcul interrompu sans résultat.' };
+      }
+      const r = routeOptionsData.rapide;
+      const z = routeOptionsData.zero || null;
+      return {
+        data: {
+          distanceKm: r.distA,
+          dureeSec: r.dureeSec,
+          coutCarburant: r.coutA,
+          coutPeage: typeof r.coutPeage === 'number' ? r.coutPeage : null,
+          peageSource: r.peageSource || null,
+          zero: z ? { distanceKm: z.distA, dureeSec: z.dureeSec, coutCarburant: z.coutA } : null,
+        },
+      };
+    });
+
+    if (!result.data) throw new Error(result.error);
+    return result.data;
+  } catch (error) {
+    const baseMessage = error.name === 'TimeoutError'
+      ? `délai dépassé après ${CALCUL_TIMEOUT_MS / 1000} s`
+      : (error.message || 'Erreur inconnue');
+    const details = networkFailures.length
+      ? ` — ${networkFailures.slice(-4).join(' | ')}`
+      : '';
+    throw new Error(baseMessage + details);
+  } finally {
+    await page.close().catch(() => {});
+  }
 }
 
 function verdictSansPeages(rapide, zero) {
@@ -260,41 +335,78 @@ function renderIndex(reussis) {
 
 async function main() {
   const server = await startServer();
-  const browser = await chromium.launch();
+  let browser;
   const outDir = path.join(ROOT, 'trajets');
+  const resultsBySlug = new Map();
+  const lastErrorsBySlug = new Map();
 
-  // Passe 1 : calcule les chiffres réels de chaque trajet (accès réseau).
-  const reussis = [];
-  for (const t of TRAJETS) {
-    process.stdout.write(`Calcul ${t.depart} → ${t.arrivee}… `);
-    try {
-      const r = await calculerTrajet(browser, t.depart, t.arrivee);
-      reussis.push({ ...t, r });
-      console.log('ok');
-    } catch (e) {
-      console.log('ÉCHEC :', e.message);
+  try {
+    browser = await chromium.launch();
+
+    // Trois passes espacées plutôt que trois essais immédiats : les APIs ont
+    // le temps de récupérer d'un quota minute ou d'une indisponibilité brève.
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const pending = TRAJETS.filter(t => !resultsBySlug.has(t.slug));
+      if (!pending.length) break;
+
+      if (attempt > 1) {
+        const delayMs = RETRY_DELAYS_MS[attempt - 2];
+        console.log(`\nPause de ${delayMs / 1000} s avant de retenter ${pending.length} trajet(s)…`);
+        await sleep(delayMs);
+      }
+      console.log(`\nPasse ${attempt}/${MAX_ATTEMPTS} — ${pending.length} trajet(s)`);
+
+      for (let i = 0; i < pending.length; i++) {
+        const t = pending[i];
+        process.stdout.write(`Calcul ${t.depart} → ${t.arrivee}… `);
+        try {
+          const r = await calculerTrajet(browser, t.depart, t.arrivee);
+          resultsBySlug.set(t.slug, { ...t, r });
+          lastErrorsBySlug.delete(t.slug);
+          console.log('ok');
+        } catch (error) {
+          const message = error.message || 'Erreur inconnue';
+          lastErrorsBySlug.set(t.slug, message);
+          console.log(attempt < MAX_ATTEMPTS ? `à retenter : ${message}` : `échec définitif : ${message}`);
+        }
+
+        if (i < pending.length - 1) await sleep(DELAY_BETWEEN_ROUTES_MS);
+      }
     }
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+    await new Promise(resolve => server.close(resolve));
   }
-  await browser.close();
-  server.close();
 
-  // Garde-fou : si trop de trajets ont échoué (API indisponible un matin, clé
-  // expirée…), on abandonne SANS rien écrire, pour ne pas publier une liste et
-  // un sitemap amputés. Les anciennes pages restent alors telles quelles.
+  const reussis = TRAJETS.filter(t => resultsBySlug.has(t.slug)).map(t => resultsBySlug.get(t.slug));
+  const echecs = TRAJETS.filter(t => !resultsBySlug.has(t.slug));
+
+  // Garde-fou : une panne large reste un vrai échec. Aucun fichier n'est
+  // touché, donc une génération incomplète ne peut pas être publiée.
   const seuil = Math.ceil(TRAJETS.length * 0.7);
   if (reussis.length < seuil) {
     console.error(`\nTrop d'échecs : ${reussis.length}/${TRAJETS.length} réussis (seuil ${seuil}). Rien n'est écrit.`);
-    process.exit(1);
+    for (const t of echecs) console.error(`- ${t.depart} → ${t.arrivee}: ${lastErrorsBySlug.get(t.slug)}`);
+    process.exitCode = 1;
+    return;
   }
 
-  // Passe 2 : rend les pages avec le maillage interne (liens vers les autres
-  // trajets réussis uniquement). Deux passes pour n'avoir aucun lien mort.
-  const urls = [];
-  for (const t of reussis) {
-    fs.writeFileSync(path.join(outDir, `${t.slug}.html`), renderPage(t, t.r, reussis));
-    urls.push(`${SITE_URL}/trajets/${t.slug}.html`);
+  if (echecs.length) {
+    console.warn(`\n${echecs.length} trajet(s) restent indisponibles après ${MAX_ATTEMPTS} passes. Leur dernière page valide sera conservée.`);
+    for (const t of echecs) console.warn(`- ${t.depart} → ${t.arrivee}: ${lastErrorsBySlug.get(t.slug)}`);
   }
-  fs.writeFileSync(path.join(outDir, 'index.html'), renderIndex(reussis));
+
+  // Une erreur isolée ne doit pas supprimer du maillage SEO une page déjà
+  // publiée. Les nouveaux trajets sans fichier ne sont, eux, pas annoncés.
+  const publiables = TRAJETS.filter(t =>
+    resultsBySlug.has(t.slug) || fs.existsSync(path.join(outDir, `${t.slug}.html`)));
+
+  for (const t of reussis) {
+    fs.writeFileSync(path.join(outDir, `${t.slug}.html`), renderPage(t, t.r, publiables));
+  }
+  fs.writeFileSync(path.join(outDir, 'index.html'), renderIndex(publiables));
+
+  const urls = publiables.map(t => `${SITE_URL}/trajets/${t.slug}.html`);
   urls.push(`${SITE_URL}/trajets/`);
 
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
@@ -304,7 +416,7 @@ ${urls.map(u => `  <url><loc>${u}</loc><changefreq>weekly</changefreq></url>`).j
 </urlset>
 `;
   fs.writeFileSync(path.join(ROOT, 'sitemap.xml'), sitemap);
-  console.log(`\n${urls.length}/${TRAJETS.length} pages générées. sitemap.xml mis à jour.`);
+  console.log(`\n${reussis.length}/${TRAJETS.length} trajets recalculés ; ${publiables.length}/${TRAJETS.length} pages publiées. sitemap.xml mis à jour.`);
 }
 
 main();
