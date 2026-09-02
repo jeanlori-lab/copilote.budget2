@@ -12,6 +12,10 @@ on:
   schedule:
     - cron: '0 6 * * *'
 
+concurrency:
+  group: generate-trajets-seo
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write
@@ -19,15 +23,17 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
 
       - name: Installe les dépendances (Playwright)
-        run: npm install
+        run: npm ci
 
       - name: Installe Chromium pour Playwright
         run: npx playwright install --with-deps chromium
