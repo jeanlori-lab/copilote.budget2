@@ -1,0 +1,269 @@
+name: Build station ex-aequo test
+
+on:
+  push:
+    branches:
+      - feature/stations-ex-aequo
+    paths:
+      - .github/workflows/feature-stations-ex-aequo.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add equal-price stations and post-search fuel selector
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+
+          # 1) La recherche "sur le trajet" garde toutes les stations ex aequo
+          # au prix minimum, tout en continuant à retourner une seule station
+          # aux appels existants (optimisation des arrêts, tronçons, etc.).
+          start = s.index('async function fetchStationSurTrajet(polyline5, type, fenetreKm) {')
+          end = s.index('// Réservoir + niveau', start)
+          seg = s[start:end]
+
+          old = 'async function fetchStationSurTrajet(polyline5, type, fenetreKm) {\n'
+          new = 'async function fetchStationSurTrajet(polyline5, type, fenetreKm) {\n  lastStationsMinTrajet = [];\n'
+          if seg.count(old) != 1:
+              raise SystemExit('fetchStationSurTrajet signature not found exactly once')
+          seg = seg.replace(old, new, 1)
+
+          old = '    let best = null;\n'
+          new = '    let best = null;\n    const bests = [];\n'
+          if seg.count(old) != 1:
+              raise SystemExit('best declaration not found exactly once')
+          seg = seg.replace(old, new, 1)
+
+          old = '      if (best && prix >= best.prix) continue;\n'
+          new = '      if (best && Math.round(prix * 1000) > Math.round(best.prix * 1000)) continue;\n'
+          if seg.count(old) != 1:
+              raise SystemExit('price shortcut not found exactly once')
+          seg = seg.replace(old, new, 1)
+
+          old = "      best = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, distRoute, kmSurTrajet: echKm[idxMin], maj };\n"
+          new = """      const candidate = { prix, nom: f.nom || '', ville: f.ville || '', lat: sLat, lon: sLon, distRoute, kmSurTrajet: echKm[idxMin], maj };
+      const prixMilli = Math.round(prix * 1000);
+      const bestMilli = best ? Math.round(best.prix * 1000) : Infinity;
+      if (!best || prixMilli < bestMilli) {
+        best = candidate;
+        bests.length = 0;
+        bests.push(candidate);
+      } else if (prixMilli === bestMilli) {
+        const deja = bests.some(st => Math.abs(st.lat - sLat) < 0.00001 && Math.abs(st.lon - sLon) < 0.00001);
+        if (!deja) bests.push(candidate);
+      }
+"""
+          if seg.count(old) != 1:
+              raise SystemExit('best assignment not found exactly once')
+          seg = seg.replace(old, new, 1)
+
+          old = '    return best;\n  } catch (e) { return null; }\n'
+          new = """    lastStationsMinTrajet = bests.sort((a, b) => a.kmSurTrajet - b.kmSurTrajet);
+    return best;
+  } catch (e) { lastStationsMinTrajet = []; return null; }
+"""
+          if seg.count(old) != 1:
+              raise SystemExit('fetchStationSurTrajet return block not found exactly once')
+          seg = seg.replace(old, new, 1)
+
+          s = s[:start] + 'let lastStationsMinTrajet = []; // toutes les stations au prix minimum du dernier segment recherché\n' + seg + s[end:]
+
+          # 2) UI de test : si plusieurs stations partagent le prix minimum sur
+          # tout le trajet, remplacer la fiche unique par une carte multi-points
+          # + un sélecteur. Dans le mode réservoir qui exige réellement un arrêt,
+          # on conserve le plan d'arrêts existant (logique différente).
+          addon = r'''
+
+// --- TEST UX : stations ex aequo + sélection carburant après recherche ---
+function renderStationsPrixEgaux(note, stations, type, depart, arrivee, litresPlein, customNote) {
+  const info = document.createElement('div');
+  info.className = 'cheapest-fuel-note';
+  info.style.marginBottom = '10px';
+  info.innerHTML = `<strong>${stations.length} stations</strong> sont au même prix minimum : <strong>${stations[0].prix.toFixed(3)} €/L</strong>. Choisissez celle qui vous arrange le mieux.`;
+  note.appendChild(info);
+
+  const contentWrap = document.createElement('div');
+  contentWrap.className = 'arret-content';
+  let select = null;
+  const mapRef = {};
+
+  function renderContent(idx) {
+    contentWrap.textContent = '';
+    const station = stations[idx];
+    const detail = buildStationDetail(station, type, null, null, false);
+    if (isFinite(station.distRoute)) {
+      const distNode = document.createTextNode(' (à ' + station.distRoute.toFixed(1) + ' km de la route)');
+      const dateSpan = detail.querySelector('.src-note');
+      if (dateSpan) detail.insertBefore(distNode, dateSpan); else detail.appendChild(distNode);
+    }
+    contentWrap.appendChild(detail);
+
+    const pos = document.createElement('div');
+    pos.className = 'cheapest-fuel-note';
+    const km = isFinite(station.kmSurTrajet) ? ` · vers le km ${Math.round(station.kmSurTrajet)} du trajet` : '';
+    pos.textContent = customNote || `Même prix minimum que les autres stations affichées${km}.`;
+    contentWrap.appendChild(pos);
+
+    const badge = buildEcoBadge(station.prix, litresPlein);
+    if (badge) contentWrap.appendChild(badge);
+
+    const mapsUrl = `https://www.google.com/maps/dir/?api=1&travelmode=driving&origin=${encodeURIComponent(depart)}&destination=${encodeURIComponent(arrivee)}&waypoints=${station.lat},${station.lon}`;
+    contentWrap.appendChild(buildNavStationRow(station, mapsUrl));
+
+    if (select) select.value = String(idx);
+    if (mapRef.setSelected) mapRef.setSelected(idx);
+    refreshStationMaps();
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'troncon-select-wrap';
+  select = document.createElement('select');
+  select.className = 'troncon-select';
+  stations.forEach((station, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    const lieu = station.ville || station.nom || `Station ${i + 1}`;
+    const km = isFinite(station.kmSurTrajet) ? ` · km ${Math.round(station.kmSurTrajet)}` : '';
+    opt.textContent = `${i + 1}. ${lieu}${km}`;
+    select.appendChild(opt);
+  });
+  select.addEventListener('change', () => renderContent(parseInt(select.value, 10)));
+  wrap.appendChild(select);
+  note.appendChild(wrap);
+
+  note.appendChild(buildItineraireMap(
+    lastStationSurTrajet && lastStationSurTrajet.polyline,
+    stations,
+    { onSelect: (i) => renderContent(i), ref: mapRef }
+  ));
+  note.appendChild(contentWrap);
+  renderContent(0);
+}
+
+const rechercherStationSurTrajetBasePrixEgaux = rechercherStationSurTrajet;
+rechercherStationSurTrajet = async function() {
+  await rechercherStationSurTrajetBasePrixEgaux();
+  const ctx = lastStationSurTrajet;
+  if (!ctx || ctx.type === 'electrique') return;
+  if (Array.isArray(ctx.lieux) && ctx.lieux.length >= 3) return;
+
+  const stations = Array.isArray(lastStationsMinTrajet) ? lastStationsMinTrajet.slice() : [];
+  if (stations.length < 2) return;
+
+  let litresPlein = LITRES_PLEIN_MAX_DEFAUT;
+  let customNote = '';
+  const reservoir = getReservoirInfo();
+  if (reservoir && ctx.distKm > 0 && ctx.conso > 0) {
+    const kmParPct = reservoir.capacite / ctx.conso;
+    const d20 = (reservoir.niveau - 20) * kmParPct;
+    // Si un arrêt est réellement nécessaire, la logique d'optimisation par
+    // fenêtre reste prioritaire : on ne remplace pas son plan d'arrêts.
+    if (d20 < ctx.distKm) return;
+    const arriveePct = Math.max(0, Math.round(reservoir.niveau - ctx.distKm / kmParPct));
+    litresPlein = reservoir.capacite * (1 - reservoir.niveau / 100);
+    customNote = `⛽ Pas d'arrêt indispensable : vous arriveriez avec ~${arriveePct} % de réservoir. Ces stations partagent toutes le prix minimum du trajet.`;
+  }
+
+  const note = document.getElementById('cheapestNoteTrajet');
+  if (!note || note.dataset.ready !== '1') return;
+  note.textContent = '';
+
+  const header = document.createElement('div');
+  header.className = 'cheapest-header';
+  const icon = document.createElement('span');
+  icon.className = 'cheapest-icon';
+  icon.textContent = '🐀';
+  header.appendChild(icon);
+  const title = document.createElement('span');
+  title.className = 'cheapest-title';
+  title.style.fontSize = '0.9em';
+  title.textContent = 'Stations les moins chères sur le trajet';
+  header.appendChild(title);
+  note.appendChild(header);
+
+  renderStationsPrixEgaux(note, stations, ctx.type, ctx.depart, ctx.arrivee, litresPlein, customNote);
+  applyStationTabVisibility();
+};
+
+function buildCarburantStationResultat() {
+  const current = document.getElementById('carburantStation').value;
+  const control = document.createElement('div');
+  control.className = 'station-result-fuel';
+  control.style.cssText = 'margin:12px 0 14px;padding:12px 0 4px;border-top:1px solid #e8edf2;';
+
+  const label = document.createElement('div');
+  label.className = 'param-label';
+  label.style.marginBottom = '8px';
+  label.textContent = 'Carburant';
+  control.appendChild(label);
+
+  const choices = document.createElement('div');
+  choices.className = 'carb-choices';
+  choices.id = 'carbChoicesStationResultat';
+  const vals = [
+    ['sp95', 'SP95'], ['gazole', 'Gazole'], ['sp98', 'SP98'],
+    ['gplc', 'GPL'], ['e85', 'E85'], ['electrique', 'Électrique']
+  ];
+  vals.forEach(([value, texte]) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'carb-choice' + (value === current ? ' active' : '');
+    btn.dataset.value = value;
+    btn.textContent = texte;
+    btn.addEventListener('click', () => {
+      if (document.getElementById('carburantStation').value === value) return;
+      const original = document.querySelector(`#carbChoicesStation .carb-choice[data-value="${value}"]`);
+      setCarburantStation(value, original || btn);
+      rechercherStationStandalone();
+    });
+    choices.appendChild(btn);
+  });
+  control.appendChild(choices);
+  return control;
+}
+
+const rechercherStationStandaloneBaseCarburant = rechercherStationStandalone;
+rechercherStationStandalone = async function() {
+  await rechercherStationStandaloneBaseCarburant();
+  const note = document.getElementById('cheapestNoteStation');
+  if (!note || note.style.display === 'none' || !note.children.length) return;
+  if (note.querySelector('#carbChoicesStationResultat')) return;
+  const control = buildCarburantStationResultat();
+  const header = note.querySelector('.cheapest-header');
+  if (header) header.insertAdjacentElement('afterend', control);
+  else note.prepend(control);
+};
+// --- fin TEST UX ---
+'''
+
+          marker = '</script>'
+          pos = s.rfind(marker)
+          if pos < 0:
+              raise SystemExit('closing script tag not found')
+          if 'renderStationsPrixEgaux' in s:
+              raise SystemExit('test addon already present')
+          s = s[:pos] + addon + '\n' + s[pos:]
+
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Basic checks
+        run: |
+          grep -q "lastStationsMinTrajet" index.html
+          grep -q "renderStationsPrixEgaux" index.html
+          grep -q "carbChoicesStationResultat" index.html
+          grep -q "Stations les moins chères sur le trajet" index.html
+      - name: Commit feature test
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Teste les stations ex aequo et le carburant après recherche"
+          git push
