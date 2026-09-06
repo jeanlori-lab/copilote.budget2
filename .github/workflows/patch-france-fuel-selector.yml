@@ -1,0 +1,49 @@
+name: Patch France entière fuel selector
+
+on:
+  push:
+    branches:
+      - feature/stations-ex-aequo
+    paths:
+      - .github/workflows/patch-france-fuel-selector.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep fuel selector visible in France entière mode
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+
+          old = """  stationFranceEntiere = !stationFranceEntiere;\n  document.getElementById('cheapestNoteStation').style.display = 'none';\n"""
+          new = """  stationFranceEntiere = !stationFranceEntiere;\n  // En mode France entière, le carburant doit rester sélectionnable avant\n  // de lancer la recherche. On réutilise exactement la ligne de choix\n  // déjà présente dans ce formulaire, sans créer un second composant.\n  const stationFuelRow = document.querySelector('#modeStation .carburant-row');\n  if (stationFuelRow) stationFuelRow.classList.toggle('ouvert', stationFranceEntiere);\n  document.getElementById('cheapestNoteStation').style.display = 'none';\n"""
+          if s.count(old) != 1:
+              raise SystemExit(f'toggleFranceEntiere anchor count={s.count(old)}')
+          s = s.replace(old, new, 1)
+
+          old2 = """rechercherStationStandalone = async function() {\n  await rechercherStationStandaloneBaseCarburant();\n  const note = document.getElementById('cheapestNoteStation');\n"""
+          new2 = """rechercherStationStandalone = async function() {\n  await rechercherStationStandaloneBaseCarburant();\n  // En France entière, le sélecteur reste visible dans le formulaire :\n  // ne pas en dupliquer un second dans la carte de résultat.\n  if (stationFranceEntiere) return;\n  const note = document.getElementById('cheapestNoteStation');\n"""
+          if s.count(old2) != 1:
+              raise SystemExit(f'standalone wrapper anchor count={s.count(old2)}')
+          s = s.replace(old2, new2, 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Validate patch
+        run: |
+          grep -q "stationFuelRow.classList.toggle('ouvert', stationFranceEntiere)" index.html
+          grep -q "if (stationFranceEntiere) return;" index.html
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Garde le choix carburant en mode France entière"
+          git push
