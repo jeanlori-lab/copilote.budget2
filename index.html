@@ -4667,6 +4667,11 @@ function toggleFranceEntiere() {
   const input = document.getElementById('stationAdresse');
   const btn = document.getElementById('franceEntiereBtn');
   stationFranceEntiere = !stationFranceEntiere;
+  // En mode France entière, le carburant doit rester sélectionnable avant
+  // de lancer la recherche. On réutilise exactement la ligne de choix
+  // déjà présente dans ce formulaire, sans créer un second composant.
+  const stationFuelRow = document.querySelector('#modeStation .carburant-row');
+  if (stationFuelRow) stationFuelRow.classList.toggle('ouvert', stationFranceEntiere);
   document.getElementById('cheapestNoteStation').style.display = 'none';
   hideStationError();
   if (stationFranceEntiere) {
@@ -6418,6 +6423,9 @@ function buildCarburantStationResultat() {
 const rechercherStationStandaloneBaseCarburant = rechercherStationStandalone;
 rechercherStationStandalone = async function() {
   await rechercherStationStandaloneBaseCarburant();
+  // En France entière, le sélecteur reste visible dans le formulaire :
+  // ne pas en dupliquer un second dans la carte de résultat.
+  if (stationFranceEntiere) return;
   const note = document.getElementById('cheapestNoteStation');
   if (!note || note.style.display === 'none' || !note.children.length) return;
   if (note.querySelector('#carbChoicesStationResultat')) return;
